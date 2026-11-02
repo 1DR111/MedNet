@@ -17,9 +17,24 @@ import {
 import { createClient } from '@/lib/supabase/client';
 import type { Hmo, PatientProfile, PlanTier } from '@/types/database';
 
-/** Tiers a patient can hold. `'All'` is a facility-side wildcard, not a plan. */
-const PLAN_TIERS = ['Bronze', 'Silver', 'Gold', 'Platinum'] as const satisfies readonly PlanTier[];
-type PatientPlanTier = (typeof PLAN_TIERS)[number];
+/**
+ * Plans a patient can hold, grouped for the `<optgroup>` picker.
+ * `'All'` is a facility-side wildcard, not a plan, so it is not offered here.
+ */
+const PLAN_TIER_GROUPS = [
+  {
+    label: 'Corporate plans',
+    tiers: ['Plus', 'Pro', 'Max', 'Pro Max', 'Magnum', 'Magnum Plus'],
+  },
+  {
+    label: 'Retail plans',
+    tiers: ['Strawberry', 'Cranberry', 'Blueberry', 'Blackberry', 'Raspberry'],
+  },
+] as const satisfies readonly { label: string; tiers: readonly PlanTier[] }[];
+
+type PatientPlanTier = (typeof PLAN_TIER_GROUPS)[number]['tiers'][number];
+
+const PLAN_TIERS: readonly PatientPlanTier[] = PLAN_TIER_GROUPS.flatMap((group) => group.tiers);
 
 const DEFAULT_CITY = 'Abuja';
 const CITIES = [
@@ -43,7 +58,6 @@ type ExistingProfile = Pick<
   | 'has_hmo'
   | 'hmo_id'
   | 'hmo_plan_tier'
-  | 'hmo_enrollee_id'
   | 'default_city'
 >;
 
@@ -69,7 +83,6 @@ export default function OnboardingPage() {
   const [hasHmo, setHasHmo] = useState(false);
   const [hmoId, setHmoId] = useState('');
   const [planTier, setPlanTier] = useState<PatientPlanTier | ''>('');
-  const [enrolleeId, setEnrolleeId] = useState('');
   const [defaultCity, setDefaultCity] = useState<string>(DEFAULT_CITY);
 
   const [submitting, setSubmitting] = useState<'save' | 'skip' | null>(null);
@@ -101,7 +114,7 @@ export default function OnboardingPage() {
         supabase
           .from('patient_profiles')
           .select(
-            'email, full_name, phone, has_hmo, hmo_id, hmo_plan_tier, hmo_enrollee_id, default_city',
+            'email, full_name, phone, has_hmo, hmo_id, hmo_plan_tier, default_city',
           )
           .eq('id', currentUser.id)
           .maybeSingle()
@@ -130,7 +143,6 @@ export default function OnboardingPage() {
         setHasHmo(profile.has_hmo);
         setHmoId(profile.hmo_id ?? '');
         setPlanTier(isPatientPlanTier(profile.hmo_plan_tier) ? profile.hmo_plan_tier : '');
-        setEnrolleeId(profile.hmo_enrollee_id ?? '');
         setDefaultCity(isKnownCity(profile.default_city) ? profile.default_city : DEFAULT_CITY);
       }
 
@@ -154,7 +166,6 @@ export default function OnboardingPage() {
     if (!value) {
       setHmoId('');
       setPlanTier('');
-      setEnrolleeId('');
     }
   }
 
@@ -173,13 +184,11 @@ export default function OnboardingPage() {
           has_hmo: existingProfile?.has_hmo ?? false,
           hmo_id: existingProfile?.hmo_id ?? null,
           hmo_plan_tier: existingProfile?.hmo_plan_tier ?? null,
-          hmo_enrollee_id: existingProfile?.hmo_enrollee_id ?? null,
         }
       : {
           has_hmo: hasHmo,
           hmo_id: hasHmo ? hmoId : null,
           hmo_plan_tier: hasHmo && planTier ? planTier : null,
-          hmo_enrollee_id: hasHmo && enrolleeId.trim() ? enrolleeId.trim() : null,
         };
 
     const payload = {
@@ -215,7 +224,7 @@ export default function OnboardingPage() {
         return;
       }
       if (!planTier) {
-        setError('Please select your plan tier.');
+        setError('Please select your plan.');
         return;
       }
     }
@@ -255,11 +264,11 @@ export default function OnboardingPage() {
               <HeartPulse className="h-7 w-7" aria-hidden="true" />
             </div>
             <h1 className="text-2xl font-semibold tracking-tight text-slate-900">
-              Set up your coverage
+              Personalise your search
             </h1>
             <p className="mt-1 max-w-sm text-sm text-slate-600">
-              Tell us about your health insurance so we can highlight facilities that accept your
-              plan. You can change this later.
+              Add your HMO plan and preferred city to see which hospitals, clinics, pharmacies and
+              labs accept your coverage. You can update this at any time.
             </p>
           </div>
 
@@ -308,7 +317,7 @@ export default function OnboardingPage() {
                       checked={hasHmo}
                       onChange={() => setCoverage(true)}
                       title="Yes"
-                      description="I'm enrolled with an HMO"
+                      description="Show facilities that accept my plan"
                     />
                     <ToggleOption
                       name="has_hmo"
@@ -316,7 +325,7 @@ export default function OnboardingPage() {
                       checked={!hasHmo}
                       onChange={() => setCoverage(false)}
                       title="No"
-                      description="I'll pay out of pocket"
+                      description="Browse all facilities"
                     />
                   </div>
                 </fieldset>
@@ -344,46 +353,26 @@ export default function OnboardingPage() {
 
                     <SelectField
                       id="hmo_plan_tier"
-                      label="Plan tier"
+                      label="Your plan"
+                      hint={selectedHmo ? `As shown on your ${selectedHmo.name} card` : undefined}
                       icon={<BadgeCheck className="h-4 w-4" aria-hidden="true" />}
                       value={planTier}
                       onChange={(value) => setPlanTier(isPatientPlanTier(value) ? value : '')}
                       required
                     >
                       <option value="" disabled>
-                        Select your plan tier
+                        Select your plan
                       </option>
-                      {PLAN_TIERS.map((tier) => (
-                        <option key={tier} value={tier}>
-                          {selectedHmo ? `${selectedHmo.name} ${tier}` : tier}
-                        </option>
+                      {PLAN_TIER_GROUPS.map((group) => (
+                        <optgroup key={group.label} label={group.label}>
+                          {group.tiers.map((tier) => (
+                            <option key={tier} value={tier}>
+                              {tier}
+                            </option>
+                          ))}
+                        </optgroup>
                       ))}
                     </SelectField>
-
-                    <div>
-                      <div className="mb-1.5 flex items-baseline justify-between">
-                        <label htmlFor="hmo_enrollee_id" className="text-sm font-medium text-slate-700">
-                          Enrollee ID
-                        </label>
-                        <span id="hmo_enrollee_id-optional" className="text-xs text-slate-400">
-                          Optional
-                        </span>
-                      </div>
-                      <input
-                        id="hmo_enrollee_id"
-                        name="hmo_enrollee_id"
-                        type="text"
-                        autoComplete="off"
-                        aria-describedby="hmo_enrollee_id-optional hmo_enrollee_id-hint"
-                        value={enrolleeId}
-                        onChange={(e) => setEnrolleeId(e.target.value)}
-                        placeholder="e.g. LW-0012345"
-                        className="block w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 shadow-sm transition-colors focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
-                      />
-                      <p id="hmo_enrollee_id-hint" className="mt-1.5 text-xs text-slate-500">
-                        Found on your HMO card. Helps facilities verify your coverage faster.
-                      </p>
-                    </div>
                   </div>
                 )}
 
@@ -394,7 +383,7 @@ export default function OnboardingPage() {
                   icon={<MapPin className="h-4 w-4" aria-hidden="true" />}
                   value={defaultCity}
                   onChange={(value) => setDefaultCity(value)}
-                  hint="Used when location access is off"
+                  hint="Used when location access is unavailable"
                 >
                   {CITIES.map((city) => (
                     <option key={city} value={city}>
@@ -443,7 +432,7 @@ export default function OnboardingPage() {
           </div>
 
           <p className="mt-6 text-center text-xs text-slate-500">
-            Your coverage details are only used to filter facilities and are never shared.
+            Your plan details are only used to match you with facilities and are never shared.
           </p>
         </div>
       </main>

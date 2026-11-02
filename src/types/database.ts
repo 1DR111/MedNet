@@ -15,12 +15,36 @@
 export type FacilityType = 'hospital' | 'clinic' | 'pharmacy' | 'laboratory';
 
 /**
+ * Leadway Health plan names.
+ *
+ * Corporate plans: Plus, Pro, Max, Pro Max, Magnum, Magnum Plus.
+ * Retail plans: Strawberry, Cranberry, Blueberry, Blackberry, Raspberry.
+ */
+export type LeadwayPlanTier =
+  | 'Plus'
+  | 'Pro'
+  | 'Max'
+  | 'Pro Max'
+  | 'Magnum'
+  | 'Magnum Plus'
+  | 'Strawberry'
+  | 'Cranberry'
+  | 'Blueberry'
+  | 'Blackberry'
+  | 'Raspberry';
+
+/**
  * HMO plan tier.
  *
+ * Stored as free text in Postgres (`TEXT` / `TEXT[]`) so that each HMO can use
+ * its real plan names. The known Leadway names are listed for autocompletion,
+ * but any string is valid. `(string & {})` keeps the literal suggestions
+ * visible in editors; a bare `string` would collapse the union.
+ *
  * `'All'` is a wildcard used on a facility's accepted-tier list to indicate
- * that every tier of a given HMO is accepted.
+ * that every plan of a given HMO is accepted.
  */
-export type PlanTier = 'Bronze' | 'Silver' | 'Gold' | 'Platinum' | 'All';
+export type PlanTier = LeadwayPlanTier | 'All' | (string & {});
 
 /* -------------------------------------------------------------------------- */
 /*                                    HMOs                                    */
@@ -46,7 +70,7 @@ export interface HmoPlan {
   id: string;
   /** Foreign key to {@link Hmo.id}. */
   hmo_id: string;
-  /** Plan name, e.g. `'Leadway Silver'`. */
+  /** Plan name, e.g. `'Leadway Pro'`. */
   name: string;
   /** Tier of this plan. */
   tier: PlanTier;
@@ -63,8 +87,8 @@ export interface FacilityHmo {
   /** Foreign key to {@link Hmo.id}. */
   hmo_id: string;
   /**
-   * Plan tiers accepted at this facility for this HMO.
-   * May contain `'All'` to indicate every tier is accepted.
+   * Plan tiers accepted at this facility for this HMO (Postgres `TEXT[]`).
+   * May contain `'All'` to indicate every plan is accepted.
    */
   accepted_tiers: PlanTier[];
   /** The related HMO, present when the query joins the `hmos` table. */
@@ -163,7 +187,7 @@ export interface PatientProfile {
    * Optional for patients without HMO coverage.
    */
   hmo_id?: string | null;
-  /** The patient's HMO plan tier, if covered. */
+  /** The patient's HMO plan name (Postgres `TEXT`), if covered. */
   hmo_plan_tier?: PlanTier | null;
   /** The patient's enrollee/member ID with their HMO, if covered. */
   hmo_enrollee_id?: string | null;
