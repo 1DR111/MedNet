@@ -37,7 +37,12 @@ import {
   Wallet,
   X,
 } from 'lucide-react';
-import { HmoCompatibility, TYPE_META, formatDistance } from '@/components/FacilityCard';
+import {
+  HmoCompatibility,
+  SpecialtyPills,
+  TYPE_META,
+  formatDistance,
+} from '@/components/FacilityCard';
 import type { FocusPadding } from '@/components/FacilityMap';
 import FilterBar, { EMPTY_FILTERS } from '@/components/FilterBar';
 import {
@@ -956,6 +961,8 @@ function FacilityRow({
         </p>
         <p className="truncate text-xs text-slate-500">{facility.address}</p>
 
+        <SpecialtyPills specialties={facility.specialties} className="mt-1" />
+
         <p className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px]">
           {facility.is_open_24_7 && <MiniBadge tone="teal">Open 24/7</MiniBadge>}
           {facility.has_emergency_services && <MiniBadge tone="red">Emergency</MiniBadge>}
@@ -1037,6 +1044,7 @@ function PlaceDetails({
   const phoneHref = facility.phone ? `tel:${facility.phone.replace(/[^\d+]/g, '')}` : null;
   const website = facility.website?.trim() || null;
   const email = facility.email?.trim() || null;
+  const specialties = (facility.specialties ?? []).map((item) => item.trim()).filter(Boolean);
 
   return (
     <article className="pb-4">
@@ -1181,10 +1189,8 @@ function PlaceDetails({
           )}
         </dl>
 
-        {/* Specialties and services */}
-        {facility.specialties.length > 0 && (
-          <TagList title="Specialties" items={facility.specialties} />
-        )}
+        {/* Specialties (all of them) and services */}
+        {specialties.length > 0 && <TagList title="Specialties" items={specialties} />}
         {facility.services.length > 0 && <TagList title="Services" items={facility.services} />}
 
         {facility.description && (

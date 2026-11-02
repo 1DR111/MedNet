@@ -273,7 +273,7 @@ export default function FilterBar({
           type="search"
           value={searchQuery}
           onChange={(event) => update({ searchQuery: event.target.value })}
-          placeholder="Search hospitals, clinics, pharmacies…"
+          placeholder="Search hospitals, specialties (e.g. Pediatrics), areas..."
           autoComplete="off"
           enterKeyHint="search"
           className="h-full min-w-0 flex-1 bg-transparent px-1 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none [&::-webkit-search-cancel-button]:hidden"

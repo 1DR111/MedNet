@@ -155,6 +155,9 @@ export default function FacilityCard({
         </div>
       </dl>
 
+      {/* Specialties (first few; the details view lists them all) */}
+      <SpecialtyPills specialties={facility.specialties} />
+
       {/* HMO compatibility */}
       <HmoCompatibility facility={facility} hasActiveCoverage={hasActiveCoverage} match={match} />
 
@@ -259,6 +262,43 @@ export function HmoCompatibility({
         )
       )}
     </div>
+  );
+}
+
+/**
+ * Subtle pills for a facility's specialties, capped at `limit` with a
+ * "+n more" hint. Renders nothing when there are no specialties.
+ */
+export function SpecialtyPills({
+  specialties,
+  limit = 3,
+  className = '',
+}: {
+  specialties: readonly string[] | null | undefined;
+  limit?: number;
+  className?: string;
+}) {
+  const items = (specialties ?? []).map((item) => item.trim()).filter(Boolean);
+  if (items.length === 0) return null;
+  const shown = items.slice(0, limit);
+  const hidden = items.length - shown.length;
+
+  return (
+    <ul aria-label="Specialties" className={`flex flex-wrap items-center gap-1.5 ${className}`}>
+      {shown.map((item) => (
+        <li
+          key={item}
+          className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600 ring-1 ring-inset ring-slate-900/5"
+        >
+          {item}
+        </li>
+      ))}
+      {hidden > 0 && (
+        <li className="text-[11px] text-slate-400" title={items.slice(limit).join(', ')}>
+          +{hidden} more
+        </li>
+      )}
+    </ul>
   );
 }
 

@@ -22,7 +22,7 @@ export interface FacilityWithHMO extends Facility {
 
 /** In-memory filter options understood by {@link filterFacilities}. */
 export interface FacilityFilters {
-  /** Case-insensitive match against name, address or city. */
+  /** Case-insensitive substring match against name, address, city or any specialty. */
   searchQuery?: string;
   /** Restrict to one facility type; `'all'` or `undefined` means no restriction. */
   facilityType?: FacilityType | 'all';
@@ -139,7 +139,14 @@ export function filterFacilities(
     if (onlyEmergency && !facility.has_emergency_services) return false;
 
     if (query) {
-      const haystack = [facility.name, facility.address, facility.city];
+      // "Pediatrics", "Eye" or "Maternity" should find a facility by what it
+      // treats, not only by what it is called or where it is.
+      const haystack = [
+        facility.name,
+        facility.address,
+        facility.city,
+        ...(facility.specialties ?? []),
+      ];
       if (!haystack.some((field) => field.toLowerCase().includes(query))) return false;
     }
 

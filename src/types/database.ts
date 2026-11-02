@@ -143,8 +143,9 @@ export interface Facility {
   /**
    * Medical specialties offered,
    * e.g. `['General Practice', 'Pediatrics', 'Cardiology']`.
+   * Absent or `null` for facilities that have not been tagged yet.
    */
-  specialties: string[];
+  specialties?: string[] | null;
   /**
    * Services available on site,
    * e.g. `['Emergency Care', 'Pharmacy', 'Diagnostics', 'Maternity']`.
