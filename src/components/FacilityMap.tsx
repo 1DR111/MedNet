@@ -1,7 +1,8 @@
 'use client';
 
 /**
- * Interactive Leaflet map of facilities.
+ * Interactive Leaflet map of facilities, styled to sit full-bleed behind
+ * floating UI (search box, drawer, controls) the way Google Maps does.
  *
  * Leaflet reads `window` at import time, so this module must never be
  * evaluated on the server. Load it from a Client Component with:
@@ -10,11 +11,14 @@
  *
  * The parent must give the component a height (via `className` or a sized
  * wrapper); Leaflet cannot lay out a map inside a zero-height container.
+ *
+ * Leaflet's own zoom control is disabled: the parent renders its own buttons
+ * and drives the map through `mapRef` (`zoomIn()`, `zoomOut()`, `flyTo()`).
  */
 
-import { useEffect, useMemo, useRef, type RefObject } from 'react';
-import L from 'leaflet';
-import { MapContainer, Marker, Popup, TileLayer, useMap } from 'react-leaflet';
+import { useCallback, useEffect, useMemo, useRef, type RefObject } from 'react';
+import L, { type Map as LeafletMap } from 'leaflet';
+import { AttributionControl, MapContainer, Marker, TileLayer, Tooltip, useMap } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import type { Facility, FacilityType } from '@/types/database';
 
@@ -28,7 +32,23 @@ export const DEFAULT_ZOOM = 12;
 /** Zoom used when flying to a selected facility, unless already closer. */
 const SELECTED_ZOOM = 15;
 /** Zoom used when centring on the user's location, unless already closer. */
-const USER_ZOOM = 13;
+const USER_ZOOM = 14;
+/** Smallest free width/height (px) kept for a flight target after padding. */
+const MIN_FREE_AREA = 80;
+
+/**
+ * Screen areas, in pixels, covered by floating UI. Flights place their target
+ * in the centre of what remains, so a selected pin never ends up under the
+ * drawer or the search box.
+ */
+export interface FocusPadding {
+  /** `[left, top]` */
+  topLeft: [number, number];
+  /** `[right, bottom]` */
+  bottomRight: [number, number];
+}
+
+const NO_PADDING: FocusPadding = { topLeft: [0, 0], bottomRight: [0, 0] };
 
 const TYPE_LABELS: Record<FacilityType, string> = {
   hospital: 'Hospital',
@@ -75,7 +95,7 @@ function getFacilityIcon(type: FacilityType, selected: boolean): L.DivIcon {
     iconSize: [size, size],
     // The pin tip (bottom centre after rotation) is the anchor point.
     iconAnchor: [size / 2, size],
-    popupAnchor: [0, -size],
+    tooltipAnchor: [0, -size],
   });
 
   iconCache.set(key, icon);
@@ -90,13 +110,13 @@ function getUserIcon(): L.DivIcon {
     html: `<span class="mednet-user" style="--user-color:${USER_COLOR}"><span class="mednet-user__pulse"></span><span class="mednet-user__dot"></span></span>`,
     iconSize: [24, 24],
     iconAnchor: [12, 12],
-    popupAnchor: [0, -14],
+    tooltipAnchor: [0, -12],
   });
   iconCache.set('user', icon);
   return icon;
 }
 
-/** Styles for the div icons. Scoped by class so they never leak out of the map. */
+/** Styles for the div icons and tooltips. Scoped by class so they never leak out of the map. */
 const MARKER_CSS = `
 .mednet-marker { background: transparent; border: 0; }
 .mednet-pin {
@@ -141,6 +161,21 @@ const MARKER_CSS = `
 @media (prefers-reduced-motion: reduce) {
   .mednet-user__pulse { animation: none; opacity: 0.25; }
 }
+.leaflet-tooltip.mednet-tooltip {
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 9999px;
+  background: #0f172a;
+  color: #fff;
+  font: 600 12px/1.4 system-ui, -apple-system, 'Segoe UI', sans-serif;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.25);
+}
+.leaflet-tooltip.mednet-tooltip::before { border-top-color: #0f172a; }
+.leaflet-container .leaflet-control-attribution {
+  border-radius: 9999px 9999px 0 0;
+  padding: 2px 10px;
+  font-size: 10px;
+}
 `;
 
 /* -------------------------------------------------------------------------- */
@@ -155,6 +190,19 @@ export interface FacilityMapProps {
   onSelectFacility?: (facility: Facility) => void;
   /** The patient's `[latitude, longitude]`, shown as a blue dot when known. */
   userLocation?: [number, number] | null;
+  /**
+   * Bump this to fly to `userLocation` again even when the coordinates have
+   * not changed (e.g. a second press of a "Locate me" button).
+   */
+  userLocationRevision?: number;
+  /**
+   * Returns the floating UI footprint at the moment of a flight, so the
+   * target lands in the uncovered part of the map. Measuring on demand keeps
+   * it correct as the drawer opens, closes or wraps.
+   */
+  getFocusPadding?: () => FocusPadding;
+  /** Receives the Leaflet map instance so the parent can drive zoom and flights. */
+  mapRef?: RefObject<LeafletMap | null>;
   /** Initial centre; defaults to Abuja. */
   center?: [number, number];
   /** Initial zoom; defaults to city level. */
@@ -163,26 +211,27 @@ export interface FacilityMapProps {
   className?: string;
 }
 
-type MarkerRegistry = Map<string, L.Marker>;
-
 export default function FacilityMap({
   facilities,
   selectedFacilityId = null,
   onSelectFacility,
   userLocation = null,
+  userLocationRevision = 0,
+  getFocusPadding,
+  mapRef,
   center = ABUJA_CENTER,
   zoom = DEFAULT_ZOOM,
-  className = 'h-[420px] w-full',
+  className = 'h-full w-full',
 }: FacilityMapProps) {
-  // Lets the controller open a marker's popup after flying to it.
-  const markersRef = useRef<MarkerRegistry>(new Map());
-
   return (
-    <div className={`relative overflow-hidden rounded-2xl border border-slate-200 ${className}`}>
+    <div className={`relative ${className}`}>
       <style>{MARKER_CSS}</style>
       <MapContainer
+        ref={mapRef}
         center={center}
         zoom={zoom}
+        zoomControl={false}
+        attributionControl={false}
         scrollWheelZoom
         className="h-full w-full"
         style={{ height: '100%', width: '100%' }}
@@ -191,6 +240,7 @@ export default function FacilityMap({
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors'
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         />
+        <AttributionControl position="bottomleft" prefix={false} />
 
         {facilities.map((facility) => (
           <FacilityMarker
@@ -198,7 +248,6 @@ export default function FacilityMap({
             facility={facility}
             selected={facility.id === selectedFacilityId}
             onSelect={onSelectFacility}
-            registry={markersRef}
           />
         ))}
 
@@ -206,7 +255,8 @@ export default function FacilityMap({
           facilities={facilities}
           selectedFacilityId={selectedFacilityId}
           userLocation={userLocation}
-          registry={markersRef}
+          userLocationRevision={userLocationRevision}
+          getFocusPadding={getFocusPadding}
         />
       </MapContainer>
     </div>
@@ -221,19 +271,16 @@ function FacilityMarker({
   facility,
   selected,
   onSelect,
-  registry,
 }: {
   facility: Facility;
   selected: boolean;
   onSelect?: (facility: Facility) => void;
-  registry: RefObject<MarkerRegistry>;
 }) {
   const icon = useMemo(() => getFacilityIcon(facility.type, selected), [facility.type, selected]);
   const eventHandlers = useMemo(
     () => ({ click: () => onSelect?.(facility) }),
     [facility, onSelect],
   );
-  const directionsUrl = `https://www.google.com/maps/dir/?api=1&destination=${facility.latitude},${facility.longitude}`;
 
   return (
     <Marker
@@ -241,48 +288,11 @@ function FacilityMarker({
       icon={icon}
       zIndexOffset={selected ? 1000 : 0}
       eventHandlers={eventHandlers}
-      ref={(instance) => {
-        if (instance) {
-          registry.current.set(facility.id, instance);
-        } else {
-          registry.current.delete(facility.id);
-        }
-      }}
+      alt={`${facility.name}, ${TYPE_LABELS[facility.type]}`}
     >
-      <Popup>
-        <div className="min-w-[12rem] max-w-[16rem] text-sm text-slate-900">
-          <p className="font-semibold leading-snug">{facility.name}</p>
-          <p className="mt-0.5 text-xs font-medium" style={{ color: MARKER_COLORS[facility.type] }}>
-            {TYPE_LABELS[facility.type]}
-          </p>
-          <p className="mt-1.5 text-xs text-slate-600">
-            {facility.address}, {facility.city}
-          </p>
-          {(facility.is_open_24_7 || facility.has_emergency_services) && (
-            <div className="mt-2 flex flex-wrap gap-1.5">
-              {facility.is_open_24_7 && (
-                <span className="rounded-full bg-teal-50 px-2 py-0.5 text-[11px] font-medium text-teal-700 ring-1 ring-inset ring-teal-600/20">
-                  Open 24/7
-                </span>
-              )}
-              {facility.has_emergency_services && (
-                <span className="rounded-full bg-red-50 px-2 py-0.5 text-[11px] font-medium text-red-700 ring-1 ring-inset ring-red-600/20">
-                  Emergency services
-                </span>
-              )}
-            </div>
-          )}
-          <a
-            href={directionsUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="mt-3 inline-flex w-full items-center justify-center rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold !text-white hover:bg-emerald-700"
-          >
-            Get Directions
-            <span className="sr-only"> to {facility.name} (opens in a new tab)</span>
-          </a>
-        </div>
-      </Popup>
+      <Tooltip direction="top" className="mednet-tooltip" opacity={1}>
+        {facility.name}
+      </Tooltip>
     </Marker>
   );
 }
@@ -292,22 +302,66 @@ function FacilityMarker({
 /* -------------------------------------------------------------------------- */
 
 /**
+ * Shrinks padding that would leave less than {@link MIN_FREE_AREA} px of map,
+ * so a small viewport (or one not yet laid out) never yields a NaN zoom.
+ */
+function clampPadding(size: L.Point, padding: FocusPadding): FocusPadding {
+  const clampAxis = (total: number, start: number, end: number): [number, number] => {
+    const covered = start + end;
+    if (covered === 0 || total - covered >= MIN_FREE_AREA) return [start, end];
+    const scale = Math.max(0, total - MIN_FREE_AREA) / covered;
+    return [Math.floor(start * scale), Math.floor(end * scale)];
+  };
+  const [left, right] = clampAxis(size.x, padding.topLeft[0], padding.bottomRight[0]);
+  const [top, bottom] = clampAxis(size.y, padding.topLeft[1], padding.bottomRight[1]);
+  return { topLeft: [left, top], bottomRight: [right, bottom] };
+}
+
+/**
  * Lives inside the map so it can use `useMap()`. Flies to the selected
- * facility (then opens its popup), centres on the user when their location
- * first arrives, and renders the user-location marker.
+ * facility, flies to the user when their location arrives (or is requested
+ * again), and renders the user-location marker. Every flight asks
+ * `getFocusPadding` for the floating UI footprint so the target lands in the
+ * uncovered part of the map.
  */
 function MapController({
   facilities,
   selectedFacilityId,
   userLocation,
-  registry,
+  userLocationRevision,
+  getFocusPadding,
 }: {
   facilities: Facility[];
   selectedFacilityId: string | null;
   userLocation: [number, number] | null;
-  registry: RefObject<MarkerRegistry>;
+  userLocationRevision: number;
+  getFocusPadding?: () => FocusPadding;
 }) {
   const map = useMap();
+
+  // Latest measurer, read at flight time. Declared before the flight effects so
+  // it is already current when they run; a new function alone never flies.
+  const paddingRef = useRef(getFocusPadding);
+  useEffect(() => {
+    paddingRef.current = getFocusPadding;
+  }, [getFocusPadding]);
+
+  const flyWithPadding = useCallback(
+    (target: [number, number], minZoom: number) => {
+      const { topLeft, bottomRight } = clampPadding(
+        map.getSize(),
+        paddingRef.current?.() ?? NO_PADDING,
+      );
+      // A zero-size bounds plus `maxZoom` is how Leaflet centres a point with padding.
+      map.flyToBounds(L.latLngBounds(target, target), {
+        paddingTopLeft: topLeft,
+        paddingBottomRight: bottomRight,
+        maxZoom: Math.max(map.getZoom(), minZoom),
+        duration: 0.8,
+      });
+    },
+    [map],
+  );
 
   const selected = selectedFacilityId
     ? (facilities.find((facility) => facility.id === selectedFacilityId) ?? null)
@@ -315,43 +369,31 @@ function MapController({
   const selectedLat = selected?.latitude;
   const selectedLng = selected?.longitude;
 
-  // Fly to the selected facility; open its popup once the flight settles.
-  // Depends on the coordinates, not the array, so re-filtering the list does
-  // not re-trigger the animation.
+  // Fly to the selected facility. Depends on the coordinates, not the array,
+  // so re-filtering the list does not re-trigger the animation.
   useEffect(() => {
     if (!selectedFacilityId || selectedLat === undefined || selectedLng === undefined) return;
+    flyWithPadding([selectedLat, selectedLng], SELECTED_ZOOM);
+  }, [flyWithPadding, selectedFacilityId, selectedLat, selectedLng]);
 
-    const openPopup = () => registry.current.get(selectedFacilityId)?.openPopup();
-    // Register before flying: a flight to the current position ends synchronously.
-    map.once('moveend', openPopup);
-    map.flyTo([selectedLat, selectedLng], Math.max(map.getZoom(), SELECTED_ZOOM), {
-      duration: 0.8,
-    });
-
-    return () => {
-      map.off('moveend', openPopup);
-    };
-  }, [map, registry, selectedFacilityId, selectedLat, selectedLng]);
-
-  // Centre on the patient when their location arrives and nothing is selected.
+  // Fly to the patient when their location arrives, and again on every
+  // `userLocationRevision` bump (a repeat "Locate me" press).
   const userLat = userLocation?.[0];
   const userLng = userLocation?.[1];
   useEffect(() => {
-    if (userLat === undefined || userLng === undefined || selectedFacilityId) return;
-    map.flyTo([userLat, userLng], Math.max(map.getZoom(), USER_ZOOM), { duration: 0.8 });
-    // Only react to the location itself; a later selection must not re-centre.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [map, userLat, userLng]);
+    if (userLat === undefined || userLng === undefined) return;
+    flyWithPadding([userLat, userLng], USER_ZOOM);
+  }, [flyWithPadding, userLat, userLng, userLocationRevision]);
 
   const userIcon = useMemo(() => getUserIcon(), []);
 
   if (!userLocation) return null;
 
   return (
-    <Marker position={userLocation} icon={userIcon} zIndexOffset={2000}>
-      <Popup>
-        <span className="text-sm font-medium text-slate-900">Your location</span>
-      </Popup>
+    <Marker position={userLocation} icon={userIcon} zIndexOffset={2000} alt="Your location">
+      <Tooltip direction="top" className="mednet-tooltip" opacity={1}>
+        Your location
+      </Tooltip>
     </Marker>
   );
 }

@@ -32,7 +32,8 @@ export interface FacilityCardProps {
   className?: string;
 }
 
-const TYPE_META: Record<FacilityType, { label: string; icon: typeof Building2; pill: string }> = {
+/** Label, icon and pill colours per facility type; shared with the discovery drawer. */
+export const TYPE_META: Record<FacilityType, { label: string; icon: typeof Building2; pill: string }> = {
   hospital: { label: 'Hospital', icon: Building2, pill: 'bg-teal-50 text-teal-700 ring-teal-600/20' },
   clinic: { label: 'Clinic', icon: Stethoscope, pill: 'bg-sky-50 text-sky-700 ring-sky-600/20' },
   pharmacy: { label: 'Pharmacy', icon: Pill, pill: 'bg-violet-50 text-violet-700 ring-violet-600/20' },
@@ -190,7 +191,8 @@ export default function FacilityCard({
 /*                                 Sub-components                             */
 /* -------------------------------------------------------------------------- */
 
-function HmoCompatibility({
+/** Coverage panel: match for the active plan, or the facility's accepted plans. */
+export function HmoCompatibility({
   facility,
   hasActiveCoverage,
   match,
@@ -287,7 +289,8 @@ function Badge({
 /*                                   Helpers                                  */
 /* -------------------------------------------------------------------------- */
 
-function formatDistance(km: number): string {
+/** "850 m", "2.4 km", "12 km". */
+export function formatDistance(km: number): string {
   if (km < 1) return `${Math.round(km * 1000)} m`;
   return `${km.toFixed(km < 10 ? 1 : 0)} km`;
 }
