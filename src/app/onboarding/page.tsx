@@ -14,27 +14,9 @@ import {
   MapPin,
   ShieldCheck,
 } from 'lucide-react';
+import { PLAN_TIER_GROUPS, isPatientPlanTier, type PatientPlanTier } from '@/lib/plans';
 import { createClient } from '@/lib/supabase/client';
-import type { Hmo, PatientProfile, PlanTier } from '@/types/database';
-
-/**
- * Plans a patient can hold, grouped for the `<optgroup>` picker.
- * `'All'` is a facility-side wildcard, not a plan, so it is not offered here.
- */
-const PLAN_TIER_GROUPS = [
-  {
-    label: 'Corporate plans',
-    tiers: ['Plus', 'Pro', 'Max', 'Pro Max', 'Magnum', 'Magnum Plus'],
-  },
-  {
-    label: 'Retail plans',
-    tiers: ['Strawberry', 'Cranberry', 'Blueberry', 'Blackberry', 'Raspberry'],
-  },
-] as const satisfies readonly { label: string; tiers: readonly PlanTier[] }[];
-
-type PatientPlanTier = (typeof PLAN_TIER_GROUPS)[number]['tiers'][number];
-
-const PLAN_TIERS: readonly PatientPlanTier[] = PLAN_TIER_GROUPS.flatMap((group) => group.tiers);
+import type { Hmo, PatientProfile } from '@/types/database';
 
 const DEFAULT_CITY = 'Abuja';
 const CITIES = [
@@ -62,10 +44,6 @@ type ExistingProfile = Pick<
 >;
 
 type PageStatus = 'loading' | 'ready' | 'error';
-
-function isPatientPlanTier(value: unknown): value is PatientPlanTier {
-  return typeof value === 'string' && (PLAN_TIERS as readonly string[]).includes(value);
-}
 
 function isKnownCity(value: unknown): value is (typeof CITIES)[number] {
   return typeof value === 'string' && (CITIES as readonly string[]).includes(value);

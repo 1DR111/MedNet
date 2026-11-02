@@ -200,36 +200,3 @@ export interface PatientProfile {
   /** ISO 8601 timestamp of when the row was last updated. */
   updated_at?: string;
 }
-
-/* -------------------------------------------------------------------------- */
-/*                                  Discovery                                 */
-/* -------------------------------------------------------------------------- */
-
-/**
- * Filter parameters for the facility discovery screen.
- *
- * All fields are optional; an omitted field (or the `'all'` sentinel) applies
- * no filtering on that dimension.
- */
-export interface DiscoveryFilterParams {
-  /** Free-text search over facility name, specialties, services, etc. */
-  searchQuery?: string;
-  /** Restrict to a single facility type, or `'all'` for no restriction. */
-  facilityType?: FacilityType | 'all';
-  /** Restrict to facilities offering a specialty, or `'all'`. */
-  specialty?: string | 'all';
-  /** Restrict to facilities accepting a given HMO ({@link Hmo.id}), or `'all'`. */
-  hmoId?: string | 'all';
-  /** Restrict to facilities accepting a given plan tier, or `'all'`. */
-  planTier?: PlanTier | 'all';
-  /** Only include facilities with emergency services. */
-  emergencyOnly?: boolean;
-  /** Only include facilities open 24/7. */
-  open247Only?: boolean;
-  /** User's latitude for distance sorting/filtering; `null` if unknown. */
-  userLat?: number | null;
-  /** User's longitude for distance sorting/filtering; `null` if unknown. */
-  userLng?: number | null;
-  /** Maximum distance from the user in kilometres; `null` for no limit. */
-  maxDistanceKm?: number | null;
-}
