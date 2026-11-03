@@ -14,10 +14,8 @@ import {
   ChevronDown,
   Clock,
   Globe,
-  HeartPulse,
   Info,
   Loader2,
-  LocateFixed,
   LogIn,
   LogOut,
   Mail,
@@ -29,10 +27,9 @@ import {
   RotateCcw,
   Search,
   SearchX,
-  Settings2,
+  Settings,
   ShieldAlert,
   ShieldCheck,
-  Star,
   Trash2,
   Wallet,
   X,
@@ -45,6 +42,7 @@ import {
 } from '@/components/FacilityCard';
 import type { FocusPadding } from '@/components/FacilityMap';
 import FilterBar, { EMPTY_FILTERS } from '@/components/FilterBar';
+import { clearSavedCoverage, useSavedCoverage, type SavedCoverage } from '@/lib/coverage';
 import {
   filterFacilities,
   findHmoMatch,
@@ -78,9 +76,9 @@ function MapSkeleton() {
     <div
       role="status"
       aria-label="Loading map"
-      className="flex h-full w-full animate-pulse flex-col items-center justify-center gap-3 bg-slate-200 text-sm text-slate-500"
+      className="flex h-full w-full animate-pulse flex-col items-center justify-center gap-3 bg-slate-200 text-sm text-slate-500 dark:bg-slate-900 dark:text-slate-400"
     >
-      <MapPin className="h-8 w-8 text-slate-400" aria-hidden="true" />
+      <MapPin className="h-8 w-8 text-slate-400 dark:text-slate-600" aria-hidden="true" />
       Loading map…
     </div>
   );
@@ -90,52 +88,70 @@ function MapSkeleton() {
 /*                                  Constants                                 */
 /* -------------------------------------------------------------------------- */
 
-/** Generous bounding box around the Federal Capital Territory. */
-const ABUJA_BOUNDS = { minLat: 8.3, maxLat: 9.4, minLng: 6.7, maxLng: 7.9 };
-
-/** Wuse II, central Abuja: the one-click fallback when geolocation fails. */
-export const CENTRAL_ABUJA: [number, number] = [9.0765, 7.4898];
-
-/**
- * First attempt: network/Wi-Fi positioning. Desktop PCs have no GPS, and a
- * high-accuracy request there just waits out the timeout.
- */
-const QUICK_FIX: PositionOptions = { enableHighAccuracy: false, timeout: 15_000, maximumAge: 300_000 };
-/** Retry: GPS where available. */
-const PRECISE_FIX: PositionOptions = { enableHighAccuracy: true, timeout: 20_000, maximumAge: 0 };
-
 const DRAWER_ID = 'discovery-drawer';
 /** Tailwind `sm`: from here the drawer sits beside the map instead of over its top. */
 const DESKTOP_QUERY = '(min-width: 640px)';
 /** Breathing room (px) between floating UI and a flight target. */
 const FOCUS_GUTTER = 16;
-/** Height (px) of the bottom band on phones: locate/zoom controls and toasts. */
+/** Height (px) of the bottom band on phones: zoom controls and toasts. */
 const MOBILE_BOTTOM_UI = 140;
 
+const PROFILE_COLUMNS =
+  'id, email, full_name, phone, has_hmo, hmo_id, hmo_plan_tier, hmo_enrollee_id, default_city, onboarding_completed, created_at, updated_at';
+
 const BOX_WIDTH = 'w-[360px] max-w-[calc(100vw-2rem)] sm:w-[400px]';
+
+/** Floating white panel (search box, drawer, menus, controls). */
+const SURFACE =
+  'bg-white text-slate-900 shadow-lg ring-1 ring-slate-900/5 dark:bg-slate-900 dark:text-slate-100 dark:ring-white/10';
+
+/** 44px square icon button on a floating surface. */
+const CONTROL_BUTTON =
+  'flex h-11 w-11 items-center justify-center rounded-md transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500';
 
 type Notice = {
   tone: 'info' | 'success' | 'error';
   message: string;
-  /** Show the "Use Central Abuja Location (Wuse II)" button. */
-  offerFallback?: boolean;
-  /** Show a "Retry with GPS" button. */
-  offerRetry?: boolean;
   /** Never auto-dismiss. */
   sticky?: boolean;
 } | null;
 
 type DrawerMode = 'details' | 'idle' | 'results';
 
+/** What the client knows about the session, checked on mount. */
+type AuthState = 'unknown' | 'guest' | 'signed-in';
+
+/** The plan the "My HMO Plan" chip toggles. */
+type Coverage = { hmoId: string; planTier: string | null };
+
 /* -------------------------------------------------------------------------- */
 /*                                   Helpers                                  */
 /* -------------------------------------------------------------------------- */
 
-function initialFiltersFor(profile: PatientProfile | null): FacilityFilters {
-  if (profile?.has_hmo && profile.hmo_id) {
-    return { ...EMPTY_FILTERS, hmoId: profile.hmo_id, planTier: profile.hmo_plan_tier ?? null };
+/**
+ * The coverage to filter by. A profile (server or client) is authoritative for
+ * a signed-in patient; the on-device mirror covers guests and the moment
+ * before the profile row is known.
+ */
+function resolveCoverage(
+  profile: PatientProfile | null,
+  local: SavedCoverage | null,
+): Coverage | null {
+  if (profile) {
+    return profile.has_hmo && profile.hmo_id
+      ? { hmoId: profile.hmo_id, planTier: profile.hmo_plan_tier ?? null }
+      : null;
   }
-  return { ...EMPTY_FILTERS };
+  if (local?.has_hmo && local.hmo_id) {
+    return { hmoId: local.hmo_id, planTier: local.hmo_plan_tier };
+  }
+  return null;
+}
+
+function filtersFor(coverage: Coverage | null): FacilityFilters {
+  return coverage
+    ? { ...EMPTY_FILTERS, hmoId: coverage.hmoId, planTier: coverage.planTier }
+    : { ...EMPTY_FILTERS };
 }
 
 function filtersEqual(a: FacilityFilters, b: FacilityFilters): boolean {
@@ -161,40 +177,6 @@ function describeFilters(filters: FacilityFilters, hmos: Hmo[]): string {
   if (filters.only24Hours) parts.push('Open 24/7');
   if (filters.onlyEmergency) parts.push('Emergency');
   return parts.join(' · ');
-}
-
-function isInsideAbuja([lat, lng]: [number, number]): boolean {
-  return (
-    lat >= ABUJA_BOUNDS.minLat &&
-    lat <= ABUJA_BOUNDS.maxLat &&
-    lng >= ABUJA_BOUNDS.minLng &&
-    lng <= ABUJA_BOUNDS.maxLng
-  );
-}
-
-/** Great-circle distance in kilometres. */
-function haversineKm([lat1, lng1]: [number, number], [lat2, lng2]: [number, number]): number {
-  const toRad = (deg: number) => (deg * Math.PI) / 180;
-  const earthRadiusKm = 6371;
-  const dLat = toRad(lat2 - lat1);
-  const dLng = toRad(lng2 - lng1);
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
-  return 2 * earthRadiusKm * Math.asin(Math.sqrt(a));
-}
-
-function geolocationErrorMessage(error: GeolocationPositionError): string {
-  switch (error.code) {
-    case error.PERMISSION_DENIED:
-      return 'Location access was denied. Allow location in your browser settings, or use a central Abuja location instead.';
-    case error.POSITION_UNAVAILABLE:
-      return 'Your location could not be determined. Desktop PCs often have no GPS, so you can use a central Abuja location instead.';
-    case error.TIMEOUT:
-      return 'Finding your location took too long. Retry with GPS, or use a central Abuja location instead.';
-    default:
-      return 'Something went wrong while finding your location. You can use a central Abuja location instead.';
-  }
 }
 
 function getInitials(name: string): string {
@@ -227,16 +209,19 @@ export default function DiscoveryDashboard({
 }: DiscoveryDashboardProps) {
   const router = useRouter();
 
-  const baselineFilters = useMemo(() => initialFiltersFor(patientProfile), [patientProfile]);
-
-  const [filters, setFilters] = useState<FacilityFilters>(baselineFilters);
+  const [filters, setFilters] = useState<FacilityFilters>(() =>
+    filtersFor(resolveCoverage(patientProfile, null)),
+  );
   const [selectedFacilityId, setSelectedFacilityId] = useState<string | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(true);
-  const [userLocation, setUserLocation] = useState<[number, number] | null>(null);
-  const [locationRevision, setLocationRevision] = useState(0);
-  const [locating, setLocating] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
   const [notice, setNotice] = useState<Notice>(null);
+
+  // The server passes the profile it saw; the client re-checks on mount so a
+  // stale or missing cookie read never hides a saved plan.
+  const [authState, setAuthState] = useState<AuthState>('unknown');
+  const [clientProfile, setClientProfile] = useState<PatientProfile | null>(null);
+  const localCoverage = useSavedCoverage();
 
   const recentFacilities = useRecentFacilities();
   const recentSearches = useRecentSearches();
@@ -248,17 +233,15 @@ export default function DiscoveryDashboard({
 
   /* ------------------------------- Derived data ---------------------------- */
 
-  // Annotate with distance and sort nearest-first once the patient is located.
-  const facilities = useMemo(() => {
-    if (!userLocation) return initialFacilities;
-    return initialFacilities
-      .map((facility) => ({
-        ...facility,
-        distance_km: haversineKm(userLocation, [facility.latitude, facility.longitude]),
-      }))
-      .sort((a, b) => (a.distance_km ?? 0) - (b.distance_km ?? 0));
-  }, [initialFacilities, userLocation]);
+  const profile = clientProfile ?? patientProfile;
+  const isSignedIn = profile !== null || authState === 'signed-in';
+  const savedCoverage = useMemo(
+    () => resolveCoverage(profile, localCoverage),
+    [profile, localCoverage],
+  );
+  const baselineFilters = useMemo(() => filtersFor(savedCoverage), [savedCoverage]);
 
+  const facilities = initialFacilities;
   const visibleFacilities = useMemo(() => filterFacilities(facilities, filters), [facilities, filters]);
 
   const selectedFacility = selectedFacilityId
@@ -281,10 +264,13 @@ export default function DiscoveryDashboard({
     !hasQuery && (filtersEqual(filters, baselineFilters) || filtersEqual(filters, EMPTY_FILTERS));
   const drawerMode: DrawerMode = selectedFacility ? 'details' : isIdle ? 'idle' : 'results';
 
-  const profileHmo = patientProfile?.hmo_id
-    ? (hmos.find((hmo) => hmo.id === patientProfile.hmo_id) ?? null)
+  const profileHmo = profile?.hmo_id
+    ? (hmos.find((hmo) => hmo.id === profile.hmo_id) ?? null)
     : null;
   const activeHmo = filters.hmoId ? (hmos.find((hmo) => hmo.id === filters.hmoId) ?? null) : null;
+  const savedHmoName = savedCoverage
+    ? (hmos.find((hmo) => hmo.id === savedCoverage.hmoId)?.name ?? 'your HMO')
+    : null;
 
   /**
    * Measures the floating UI when the map is about to fly, so the target
@@ -311,16 +297,62 @@ export default function DiscoveryDashboard({
 
   /* -------------------------------- Effects -------------------------------- */
 
+  // Verify the session and load the freshest profile row on the client.
+  useEffect(() => {
+    let cancelled = false;
+    const supabase = createClient();
+
+    async function verify() {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (cancelled) return;
+
+      if (!user) {
+        setAuthState('guest');
+        return;
+      }
+      setAuthState('signed-in');
+
+      const { data, error } = await supabase
+        .from('patient_profiles')
+        .select(PROFILE_COLUMNS)
+        .eq('id', user.id)
+        .maybeSingle()
+        .overrideTypes<PatientProfile, { merge: false }>();
+      if (cancelled || error || !data) return;
+
+      setClientProfile(data);
+
+      // If the server did not know the patient, apply their plan now, unless
+      // they have already started filtering.
+      if (!patientProfile && data.has_hmo && data.hmo_id) {
+        const seeded: FacilityFilters = {
+          ...EMPTY_FILTERS,
+          hmoId: data.hmo_id,
+          planTier: data.hmo_plan_tier ?? null,
+        };
+        setFilters((current) => (filtersEqual(current, EMPTY_FILTERS) ? seeded : current));
+      }
+    }
+
+    verify().catch(() => {
+      if (!cancelled) setAuthState('guest');
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [patientProfile]);
+
   // Start each drawer view at the top.
   useEffect(() => {
     drawerRef.current?.scrollTo({ top: 0 });
   }, [drawerMode, selectedFacilityId]);
 
-  // Plain confirmations fade out; errors and anything with an action stay.
+  // Plain confirmations fade out; errors and sticky notices stay.
   useEffect(() => {
-    if (!notice || notice.tone === 'error' || notice.offerFallback || notice.offerRetry || notice.sticky) {
-      return;
-    }
+    if (!notice || notice.tone === 'error' || notice.sticky) return;
     const timer = window.setTimeout(() => setNotice(null), 6_000);
     return () => window.clearTimeout(timer);
   }, [notice]);
@@ -349,6 +381,27 @@ export default function DiscoveryDashboard({
     setSelectedFacilityId(null);
   }
 
+  /**
+   * "My HMO Plan" chip:
+   * - saved plan known (account or this device): toggle it on the map;
+   * - signed in but no plan yet: go and set one in Settings;
+   * - confirmed guest with nothing saved: sign in first.
+   */
+  function handleMyPlanClick() {
+    if (savedCoverage) {
+      const active =
+        (filters.hmoId ?? null) === savedCoverage.hmoId &&
+        (filters.planTier ?? null) === savedCoverage.planTier;
+      applyFilters(
+        active
+          ? { ...filters, hmoId: null, planTier: null }
+          : { ...filters, hmoId: savedCoverage.hmoId, planTier: savedCoverage.planTier },
+      );
+      return;
+    }
+    router.push(!isSignedIn && authState === 'guest' ? '/login' : '/settings#hmo');
+  }
+
   function submitSearch(query: string) {
     if (query) rememberSearch(query);
     setSelectedFacilityId(null);
@@ -364,76 +417,6 @@ export default function DiscoveryDashboard({
     applyFilters({ ...EMPTY_FILTERS });
   }
 
-  function applyLocation(coords: [number, number], message: string) {
-    setUserLocation(coords);
-    setLocationRevision((revision) => revision + 1);
-    setNotice({ tone: 'success', message });
-  }
-
-  function useCentralAbuja() {
-    applyLocation(
-      CENTRAL_ABUJA,
-      'Using Central Abuja (Wuse II) as your location. Facilities are sorted by distance from there.',
-    );
-  }
-
-  function requestPosition(options: PositionOptions) {
-    if (typeof navigator === 'undefined' || !('geolocation' in navigator)) {
-      setNotice({
-        tone: 'error',
-        message: 'Your browser does not support location services. You can use a central Abuja location instead.',
-        offerFallback: true,
-      });
-      return;
-    }
-
-    setLocating(true);
-    setNotice({ tone: 'info', message: 'Finding your location…', sticky: true });
-
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        const coords: [number, number] = [position.coords.latitude, position.coords.longitude];
-        setLocating(false);
-
-        if (!isInsideAbuja(coords)) {
-          setNotice({
-            tone: 'info',
-            message:
-              'You appear to be outside Abuja. MedNet lists Abuja facilities only; use a central Abuja location to sort them by distance.',
-            offerFallback: true,
-          });
-          return;
-        }
-
-        applyLocation(coords, 'Location found. Facilities are now sorted by distance from you.');
-      },
-      (error) => {
-        setLocating(false);
-        setNotice({
-          tone: 'error',
-          message: geolocationErrorMessage(error),
-          offerFallback: true,
-          // A quick network fix that timed out may still succeed with GPS.
-          offerRetry: !options.enableHighAccuracy && error.code !== error.PERMISSION_DENIED,
-        });
-      },
-      options,
-    );
-  }
-
-  function locateMe() {
-    requestPosition(QUICK_FIX);
-  }
-
-  function retryWithGps() {
-    requestPosition(PRECISE_FIX);
-  }
-
-  function clearLocation() {
-    setUserLocation(null);
-    setNotice(null);
-  }
-
   async function signOut() {
     setSigningOut(true);
     const supabase = createClient();
@@ -443,7 +426,11 @@ export default function DiscoveryDashboard({
       setNotice({ tone: 'error', message: `Could not sign out: ${error.message}` });
       return;
     }
-    // Drop profile-derived filters so a signed-out visitor sees everything.
+    // Drop everything that belonged to the account: filters, the client copy
+    // of the profile and the on-device plan mirror.
+    clearSavedCoverage();
+    setClientProfile(null);
+    setAuthState('guest');
     setFilters({ ...EMPTY_FILTERS });
     setSelectedFacilityId(null);
     setSigningOut(false);
@@ -455,7 +442,7 @@ export default function DiscoveryDashboard({
   const accountMenu = (variant: 'pill' | 'compact') => (
     <AccountMenu
       variant={variant}
-      profile={patientProfile}
+      profile={profile}
       hmo={profileHmo}
       signingOut={signingOut}
       onSignOut={signOut}
@@ -463,15 +450,13 @@ export default function DiscoveryDashboard({
   );
 
   return (
-    <div className="relative h-screen w-screen overflow-hidden bg-slate-200 text-slate-900 supports-[height:100dvh]:h-dvh">
+    <div className="relative h-screen w-screen overflow-hidden bg-slate-200 text-slate-900 supports-[height:100dvh]:h-dvh dark:bg-slate-950 dark:text-slate-100">
       {/* Map: fills the viewport; `isolate` keeps Leaflet's z-indexes beneath the floating UI. */}
       <div className="absolute inset-0 z-0 isolate">
         <FacilityMap
           facilities={mapFacilities}
           selectedFacilityId={selectedFacilityId}
           onSelectFacility={selectFacility}
-          userLocation={userLocation}
-          userLocationRevision={locationRevision}
           getFocusPadding={getFocusPadding}
           mapRef={mapRef}
           className="h-full w-full"
@@ -487,14 +472,23 @@ export default function DiscoveryDashboard({
           filters={filters}
           onFilterChange={applyFilters}
           hmos={hmos}
-          patientProfile={patientProfile}
+          myPlan={
+            savedCoverage
+              ? {
+                  hmoId: savedCoverage.hmoId,
+                  planTier: savedCoverage.planTier,
+                  label: `${savedHmoName}${savedCoverage.planTier ? ` ${savedCoverage.planTier}` : ''}`,
+                }
+              : null
+          }
+          onMyPlanClick={handleMyPlanClick}
           onSearchSubmit={submitSearch}
           drawerOpen={drawerOpen}
           onToggleDrawer={() => setDrawerOpen((open) => !open)}
           drawerId={DRAWER_ID}
           trailing={
             <div className="flex items-center gap-1 sm:hidden">
-              <span className="mx-0.5 h-6 w-px shrink-0 bg-slate-200" aria-hidden="true" />
+              <span className="mx-0.5 h-6 w-px shrink-0 bg-slate-200 dark:bg-slate-700" aria-hidden="true" />
               {accountMenu('compact')}
             </div>
           }
@@ -511,7 +505,7 @@ export default function DiscoveryDashboard({
                 ? 'Search results'
                 : 'Recent and nearby facilities'
           }
-          className={`pointer-events-auto max-h-[min(40vh,20rem)] overflow-y-auto rounded-2xl bg-white/95 shadow-xl ring-1 ring-slate-900/5 backdrop-blur sm:max-h-[calc(100vh-140px)] ${BOX_WIDTH}`}
+          className={`pointer-events-auto max-h-[min(40vh,20rem)] overflow-y-auto rounded-lg bg-white/95 text-slate-900 shadow-xl ring-1 ring-slate-900/5 backdrop-blur dark:bg-slate-900/95 dark:text-slate-100 dark:ring-white/10 sm:max-h-[calc(100vh-140px)] ${BOX_WIDTH}`}
         >
           {drawerMode === 'details' && selectedFacility ? (
             <PlaceDetails
@@ -529,16 +523,14 @@ export default function DiscoveryDashboard({
                 onOpenFacility={openRecentFacility}
                 onClear={clearRecents}
               />
-              <div className="border-t border-slate-100">
+              <div className="border-t border-slate-100 dark:border-slate-800">
                 <DrawerHeading
                   title="Verified in Abuja"
                   count={visibleFacilities.length}
                   subtitle={
                     activeHmo
                       ? `Matching your ${activeHmo.name}${filters.planTier ? ` ${filters.planTier}` : ''} plan`
-                      : userLocation
-                        ? 'Sorted by distance from you'
-                        : 'All verified facilities, A to Z'
+                      : 'All verified facilities, A to Z'
                   }
                 />
                 <FacilityList
@@ -563,7 +555,7 @@ export default function DiscoveryDashboard({
                   <button
                     type="button"
                     onClick={resetFilters}
-                    className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-100 hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-400"
+                    className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-100 hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-slate-100"
                   >
                     <X className="h-3.5 w-3.5" aria-hidden="true" />
                     Clear all
@@ -582,133 +574,70 @@ export default function DiscoveryDashboard({
         </section>
       </div>
 
-      {/* Top-right: account */}
-      <div className="absolute right-4 top-4 z-[1000] hidden sm:block">{accountMenu('pill')}</div>
+      {/* Top-right: settings (every screen size) and account (wider screens) */}
+      <div className="absolute right-4 top-4 z-[1000] flex items-center gap-2">
+        <Link
+          href="/settings"
+          title="Settings"
+          className={`${CONTROL_BUTTON} ${SURFACE} text-slate-700 hover:bg-slate-50 hover:text-emerald-700 dark:text-slate-200 dark:hover:bg-slate-800 dark:hover:text-emerald-300`}
+        >
+          <Settings className="h-5 w-5" aria-hidden="true" />
+          <span className="sr-only">Settings</span>
+        </Link>
+        <div className="hidden sm:block">{accountMenu('pill')}</div>
+      </div>
 
-      {/* Bottom-left: brand (only where it cannot collide with the toast) */}
-      <Link
-        href="/"
-        className="absolute bottom-8 left-4 z-[1000] hidden items-center gap-2 rounded-full bg-white/95 py-1.5 pl-1.5 pr-3 text-sm shadow-lg ring-1 ring-slate-900/5 backdrop-blur lg:flex"
-      >
-        <span className="flex h-7 w-7 items-center justify-center rounded-full bg-emerald-600 text-white">
-          <HeartPulse className="h-4 w-4" aria-hidden="true" />
-        </span>
-        <span className="font-semibold">MedNet</span>
-        <span className="text-xs text-slate-500">Verified Healthcare Discovery · Abuja</span>
-      </Link>
-
-      {/* Bottom-right: locate + zoom */}
-      <div className="absolute bottom-6 right-4 z-[1000] flex flex-col items-center gap-3">
+      {/* Bottom-right: zoom */}
+      <div className={`absolute bottom-6 right-4 z-[1000] flex flex-col overflow-hidden rounded-md ${SURFACE}`}>
         <button
           type="button"
-          onClick={locateMe}
-          disabled={locating}
-          aria-pressed={userLocation !== null}
-          title={userLocation ? 'Re-centre on your location' : 'Show your location'}
-          className={`flex h-11 w-11 items-center justify-center rounded-full shadow-lg ring-1 ring-slate-900/5 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 disabled:cursor-wait ${
-            userLocation
-              ? 'bg-emerald-600 text-white hover:bg-emerald-700'
-              : 'bg-white text-slate-700 hover:bg-slate-50 hover:text-emerald-700'
-          }`}
+          onClick={() => mapRef.current?.zoomIn()}
+          title="Zoom in"
+          className="flex h-11 w-11 items-center justify-center text-slate-700 transition-colors hover:bg-slate-50 focus:outline-none focus-visible:bg-emerald-50 dark:text-slate-200 dark:hover:bg-slate-800 dark:focus-visible:bg-slate-800"
         >
-          {locating ? (
-            <Loader2 className="h-5 w-5 animate-spin" aria-hidden="true" />
-          ) : (
-            <LocateFixed className="h-5 w-5" aria-hidden="true" />
-          )}
-          <span className="sr-only">{locating ? 'Finding your location' : 'Locate me'}</span>
+          <Plus className="h-5 w-5" aria-hidden="true" />
+          <span className="sr-only">Zoom in</span>
         </button>
-
-        <div className="flex flex-col overflow-hidden rounded-xl bg-white shadow-lg ring-1 ring-slate-900/5">
-          <button
-            type="button"
-            onClick={() => mapRef.current?.zoomIn()}
-            title="Zoom in"
-            className="flex h-11 w-11 items-center justify-center text-slate-700 transition-colors hover:bg-slate-50 focus:outline-none focus-visible:bg-emerald-50"
-          >
-            <Plus className="h-5 w-5" aria-hidden="true" />
-            <span className="sr-only">Zoom in</span>
-          </button>
-          <span className="mx-2 h-px bg-slate-200" aria-hidden="true" />
-          <button
-            type="button"
-            onClick={() => mapRef.current?.zoomOut()}
-            title="Zoom out"
-            className="flex h-11 w-11 items-center justify-center text-slate-700 transition-colors hover:bg-slate-50 focus:outline-none focus-visible:bg-emerald-50"
-          >
-            <Minus className="h-5 w-5" aria-hidden="true" />
-            <span className="sr-only">Zoom out</span>
-          </button>
-        </div>
+        <span className="mx-2 h-px bg-slate-200 dark:bg-slate-700" aria-hidden="true" />
+        <button
+          type="button"
+          onClick={() => mapRef.current?.zoomOut()}
+          title="Zoom out"
+          className="flex h-11 w-11 items-center justify-center text-slate-700 transition-colors hover:bg-slate-50 focus:outline-none focus-visible:bg-emerald-50 dark:text-slate-200 dark:hover:bg-slate-800 dark:focus-visible:bg-slate-800"
+        >
+          <Minus className="h-5 w-5" aria-hidden="true" />
+          <span className="sr-only">Zoom out</span>
+        </button>
       </div>
 
       {/* Toast */}
       {notice && (
         <div
           role={notice.tone === 'error' ? 'alert' : 'status'}
-          className={`absolute bottom-6 left-4 right-[4.5rem] z-[1000] flex flex-col gap-2 rounded-2xl px-4 py-3 text-sm shadow-xl ring-1 lg:left-1/2 lg:right-auto lg:w-[32rem] lg:max-w-[calc(100vw-2rem)] lg:-translate-x-1/2 ${
+          className={`absolute bottom-6 left-4 right-[4.5rem] z-[1000] flex items-start gap-2 rounded-lg px-4 py-3 text-sm shadow-xl ring-1 lg:left-1/2 lg:right-auto lg:w-[32rem] lg:max-w-[calc(100vw-2rem)] lg:-translate-x-1/2 ${
             notice.tone === 'error'
-              ? 'bg-red-50 text-red-800 ring-red-200'
+              ? 'bg-red-50 text-red-800 ring-red-200 dark:bg-red-950 dark:text-red-200 dark:ring-red-900'
               : notice.tone === 'success'
-                ? 'bg-emerald-50 text-emerald-900 ring-emerald-200'
-                : 'bg-white text-slate-800 ring-slate-900/10'
+                ? 'bg-emerald-50 text-emerald-900 ring-emerald-200 dark:bg-emerald-950 dark:text-emerald-100 dark:ring-emerald-900'
+                : 'bg-white text-slate-800 ring-slate-900/10 dark:bg-slate-900 dark:text-slate-100 dark:ring-white/10'
           }`}
         >
-          <div className="flex items-start gap-2">
-            {notice.tone === 'error' ? (
-              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
-            ) : notice.tone === 'success' ? (
-              <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
-            ) : locating ? (
-              <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin" aria-hidden="true" />
-            ) : (
-              <Info className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
-            )}
-            <span className="flex-1">{notice.message}</span>
-            <button
-              type="button"
-              onClick={() => setNotice(null)}
-              aria-label="Dismiss message"
-              className="-mr-1 rounded p-0.5 opacity-70 hover:opacity-100"
-            >
-              <X className="h-4 w-4" aria-hidden="true" />
-            </button>
-          </div>
-
-          {(notice.offerFallback || notice.offerRetry || (userLocation && notice.tone === 'success')) && (
-            <div className="flex flex-wrap gap-2 pl-6">
-              {notice.offerFallback && (
-                <button
-                  type="button"
-                  onClick={useCentralAbuja}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-emerald-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2"
-                >
-                  <MapPin className="h-3.5 w-3.5" aria-hidden="true" />
-                  Use Central Abuja Location (Wuse II)
-                </button>
-              )}
-              {notice.offerRetry && (
-                <button
-                  type="button"
-                  onClick={retryWithGps}
-                  disabled={locating}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 ring-1 ring-slate-300 transition-colors hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 disabled:opacity-60"
-                >
-                  <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
-                  Retry with GPS
-                </button>
-              )}
-              {userLocation && notice.tone === 'success' && (
-                <button
-                  type="button"
-                  onClick={clearLocation}
-                  className="rounded-lg px-2 py-1.5 text-xs font-medium underline-offset-2 hover:underline"
-                >
-                  Clear location
-                </button>
-              )}
-            </div>
+          {notice.tone === 'error' ? (
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+          ) : notice.tone === 'success' ? (
+            <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+          ) : (
+            <Info className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
           )}
+          <span className="flex-1">{notice.message}</span>
+          <button
+            type="button"
+            onClick={() => setNotice(null)}
+            aria-label="Dismiss message"
+            className="-mr-1 rounded p-0.5 opacity-70 hover:opacity-100"
+          >
+            <X className="h-4 w-4" aria-hidden="true" />
+          </button>
         </div>
       )}
     </div>
@@ -733,20 +662,23 @@ function DrawerHeading({
   return (
     <div className="flex items-start justify-between gap-2 px-4 pb-1 pt-3">
       <div className="min-w-0">
-        <h2 className="flex items-center gap-2 text-sm font-semibold text-slate-800">
+        <h2 className="flex items-center gap-2 text-sm font-semibold text-slate-800 dark:text-slate-100">
           {title}
           {typeof count === 'number' && (
-            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600">
+            <span className="rounded-md bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600 dark:bg-slate-800 dark:text-slate-300">
               {count}
             </span>
           )}
         </h2>
-        {subtitle && <p className="truncate text-xs text-slate-500">{subtitle}</p>}
+        {subtitle && <p className="truncate text-xs text-slate-500 dark:text-slate-400">{subtitle}</p>}
       </div>
       {action}
     </div>
   );
 }
+
+const DRAWER_ROW =
+  'flex w-full items-center gap-3 rounded-md px-2 py-2 text-left text-sm transition-colors hover:bg-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 dark:hover:bg-slate-800';
 
 function RecentsSection({
   searches,
@@ -766,15 +698,15 @@ function RecentsSection({
   return (
     <div className="pb-2">
       <div className="flex items-center justify-between gap-2 px-4 pb-1 pt-3">
-        <h2 className="flex items-center gap-2 text-sm font-semibold text-slate-800">
-          <Clock className="h-4 w-4 text-slate-400" aria-hidden="true" />
+        <h2 className="flex items-center gap-2 text-sm font-semibold text-slate-800 dark:text-slate-100">
+          <Clock className="h-4 w-4 text-slate-400 dark:text-slate-500" aria-hidden="true" />
           Recent searches &amp; viewed
         </h2>
         {hasRecents && (
           <button
             type="button"
             onClick={onClear}
-            className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-100 hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-400"
+            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-100 hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-slate-100"
           >
             <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
             Clear
@@ -786,17 +718,13 @@ function RecentsSection({
         <ul className="px-2">
           {searches.map((query) => (
             <li key={`search:${query}`}>
-              <button
-                type="button"
-                onClick={() => onSearch(query)}
-                className="flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left text-sm transition-colors hover:bg-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
-              >
-                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500">
+              <button type="button" onClick={() => onSearch(query)} className={DRAWER_ROW}>
+                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400">
                   <Search className="h-4 w-4" aria-hidden="true" />
                 </span>
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate font-medium text-slate-800">{query}</span>
-                  <span className="block text-xs text-slate-500">Search again</span>
+                  <span className="block truncate font-medium text-slate-800 dark:text-slate-100">{query}</span>
+                  <span className="block text-xs text-slate-500 dark:text-slate-400">Search again</span>
                 </span>
               </button>
             </li>
@@ -806,19 +734,17 @@ function RecentsSection({
             const Icon = meta.icon;
             return (
               <li key={`facility:${facility.id}`}>
-                <button
-                  type="button"
-                  onClick={() => onOpenFacility(facility)}
-                  className="flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left text-sm transition-colors hover:bg-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
-                >
+                <button type="button" onClick={() => onOpenFacility(facility)} className={DRAWER_ROW}>
                   <span
-                    className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full ring-1 ring-inset ${meta.pill}`}
+                    className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md ring-1 ring-inset ${meta.pill}`}
                   >
                     <Icon className="h-4 w-4" aria-hidden="true" />
                   </span>
                   <span className="min-w-0 flex-1">
-                    <span className="block truncate font-medium text-slate-800">{facility.name}</span>
-                    <span className="block truncate text-xs text-slate-500">
+                    <span className="block truncate font-medium text-slate-800 dark:text-slate-100">
+                      {facility.name}
+                    </span>
+                    <span className="block truncate text-xs text-slate-500 dark:text-slate-400">
                       {meta.label} · {facility.address}
                     </span>
                   </span>
@@ -828,7 +754,7 @@ function RecentsSection({
           })}
         </ul>
       ) : (
-        <p className="px-4 pb-2 text-xs text-slate-500">
+        <p className="px-4 pb-2 text-xs text-slate-500 dark:text-slate-400">
           Facilities you open and searches you run will show up here.
         </p>
       )}
@@ -852,12 +778,12 @@ function FacilityList({
   if (facilities.length === 0) {
     return (
       <div className="flex flex-col items-center gap-3 px-6 py-8 text-center">
-        <span className="flex h-12 w-12 items-center justify-center rounded-full bg-slate-100 text-slate-400">
+        <span className="flex h-12 w-12 items-center justify-center rounded-md bg-slate-100 text-slate-400 dark:bg-slate-800 dark:text-slate-500">
           <SearchX className="h-6 w-6" aria-hidden="true" />
         </span>
         <div>
-          <p className="font-semibold text-slate-800">No facilities match</p>
-          <p className="mt-1 text-sm text-slate-500">
+          <p className="font-semibold text-slate-800 dark:text-slate-100">No facilities match</p>
+          <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
             Try a different plan, facility type or area, or reset the filters to browse every
             verified facility in Abuja.
           </p>
@@ -865,7 +791,7 @@ function FacilityList({
         <button
           type="button"
           onClick={onReset}
-          className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow-md shadow-emerald-600/25 transition-colors hover:bg-emerald-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2"
+          className="inline-flex items-center gap-2 rounded-md bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow-md shadow-emerald-600/25 transition-colors hover:bg-emerald-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 dark:hover:bg-emerald-500 dark:focus-visible:ring-offset-slate-900"
         >
           <RotateCcw className="h-4 w-4" aria-hidden="true" />
           Reset Filters
@@ -914,12 +840,14 @@ function FacilityRow({
   return (
     <div
       onClick={() => onSelect(facility)}
-      className={`group flex cursor-pointer items-start gap-3 rounded-xl px-2 py-2.5 transition-colors ${
-        selected ? 'bg-emerald-50' : 'hover:bg-slate-100'
+      className={`group flex cursor-pointer items-start gap-3 rounded-md px-2 py-2.5 transition-colors ${
+        selected
+          ? 'bg-emerald-50 dark:bg-emerald-500/10'
+          : 'hover:bg-slate-100 dark:hover:bg-slate-800'
       }`}
     >
       <span
-        className={`mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full ring-1 ring-inset ${meta.pill}`}
+        className={`mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-md ring-1 ring-inset ${meta.pill}`}
       >
         <Icon className="h-4 w-4" aria-hidden="true" />
       </span>
@@ -932,26 +860,16 @@ function FacilityRow({
             onSelect(facility);
           }}
           aria-pressed={selected}
-          className="flex max-w-full items-center gap-1.5 rounded-sm text-left text-sm font-semibold text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2"
+          className="flex max-w-full items-center gap-1.5 rounded-sm text-left text-sm font-semibold text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 dark:text-slate-100 dark:focus-visible:ring-offset-slate-900"
         >
           <span className="truncate">{facility.name}</span>
           {facility.is_verified && (
-            <BadgeCheck className="h-4 w-4 shrink-0 text-emerald-600" aria-label="Verified" />
+            <BadgeCheck className="h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-400" aria-label="Verified" />
           )}
         </button>
 
-        <p className="flex flex-wrap items-center gap-x-1.5 text-xs text-slate-600">
+        <p className="flex flex-wrap items-center gap-x-1.5 text-xs text-slate-600 dark:text-slate-300">
           <span>{meta.label}</span>
-          {facility.review_count > 0 && (
-            <>
-              <span aria-hidden="true">·</span>
-              <span className="inline-flex items-center gap-0.5">
-                <Star className="h-3 w-3 fill-amber-400 text-amber-400" aria-hidden="true" />
-                {facility.rating.toFixed(1)}
-                <span className="text-slate-400">({facility.review_count})</span>
-              </span>
-            </>
-          )}
           {typeof facility.distance_km === 'number' && (
             <>
               <span aria-hidden="true">·</span>
@@ -959,7 +877,7 @@ function FacilityRow({
             </>
           )}
         </p>
-        <p className="truncate text-xs text-slate-500">{facility.address}</p>
+        <p className="truncate text-xs text-slate-500 dark:text-slate-400">{facility.address}</p>
 
         <SpecialtyPills specialties={facility.specialties} className="mt-1" />
 
@@ -977,7 +895,7 @@ function FacilityRow({
               Not listed for your plan
             </MiniBadge>
           ) : (
-            <span className="text-slate-500">
+            <span className="text-slate-500 dark:text-slate-400">
               {listedHmos > 0 ? `${listedHmos} HMO${listedHmos === 1 ? '' : 's'} accepted` : 'Direct payment only'}
             </span>
           )}
@@ -990,7 +908,7 @@ function FacilityRow({
         rel="noopener noreferrer"
         onClick={(event) => event.stopPropagation()}
         title="Get directions"
-        className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-emerald-700 ring-1 ring-inset ring-emerald-200 transition-colors hover:bg-emerald-600 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+        className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-emerald-700 ring-1 ring-inset ring-emerald-200 transition-colors hover:bg-emerald-600 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 dark:text-emerald-300 dark:ring-emerald-800 dark:hover:bg-emerald-600 dark:hover:text-white"
       >
         <Navigation className="h-4 w-4" aria-hidden="true" />
         <span className="sr-only">Get directions to {facility.name} (opens in a new tab)</span>
@@ -1007,14 +925,16 @@ function MiniBadge({
   children: ReactNode;
 }) {
   const tones = {
-    teal: 'bg-teal-50 text-teal-700 ring-teal-600/20',
-    red: 'bg-red-50 text-red-700 ring-red-600/20',
-    emerald: 'bg-emerald-50 text-emerald-700 ring-emerald-600/20',
-    amber: 'bg-amber-50 text-amber-700 ring-amber-600/20',
+    teal: 'bg-teal-50 text-teal-700 ring-teal-600/20 dark:bg-teal-500/10 dark:text-teal-300 dark:ring-teal-400/30',
+    red: 'bg-red-50 text-red-700 ring-red-600/20 dark:bg-red-500/10 dark:text-red-300 dark:ring-red-400/30',
+    emerald:
+      'bg-emerald-50 text-emerald-700 ring-emerald-600/20 dark:bg-emerald-500/10 dark:text-emerald-300 dark:ring-emerald-400/30',
+    amber:
+      'bg-amber-50 text-amber-700 ring-amber-600/20 dark:bg-amber-500/10 dark:text-amber-300 dark:ring-amber-400/30',
   } as const;
   return (
     <span
-      className={`inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 font-medium ring-1 ring-inset ${tones[tone]}`}
+      className={`inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 font-medium ring-1 ring-inset ${tones[tone]}`}
     >
       {children}
     </span>
@@ -1024,6 +944,9 @@ function MiniBadge({
 /* -------------------------------------------------------------------------- */
 /*                                Place details                               */
 /* -------------------------------------------------------------------------- */
+
+const SECONDARY_ACTION =
+  'inline-flex items-center justify-center gap-2 rounded-md border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 transition-colors hover:border-teal-300 hover:bg-teal-50 hover:text-teal-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 focus-visible:ring-offset-2 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:border-teal-700 dark:hover:bg-teal-950/40 dark:hover:text-teal-200 dark:focus-visible:ring-offset-slate-900';
 
 function PlaceDetails({
   facility,
@@ -1049,26 +972,26 @@ function PlaceDetails({
   return (
     <article className="pb-4">
       {/* Sticky header with the back arrow, like a Google Maps place card. */}
-      <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-slate-100 bg-white/95 px-2 py-2 backdrop-blur">
+      <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-slate-100 bg-white/95 px-2 py-2 backdrop-blur dark:border-slate-800 dark:bg-slate-900/95">
         <button
           type="button"
           onClick={onBack}
-          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-slate-600 transition-colors hover:bg-slate-100 hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-slate-600 transition-colors hover:bg-slate-100 hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-slate-100"
         >
           <ArrowLeft className="h-5 w-5" aria-hidden="true" />
           <span className="sr-only">Back to list</span>
         </button>
-        <span className="text-sm font-medium text-slate-600">Back to list</span>
+        <span className="text-sm font-medium text-slate-600 dark:text-slate-300">Back to list</span>
       </div>
 
       <div className="space-y-4 px-4 pt-3">
         {/* Title */}
         <header>
-          <h2 className="flex flex-wrap items-center gap-x-2 gap-y-1 text-lg font-semibold leading-snug text-slate-900">
+          <h2 className="flex flex-wrap items-center gap-x-2 gap-y-1 text-lg font-semibold leading-snug text-slate-900 dark:text-slate-100">
             {facility.name}
             {facility.is_verified && (
               <span
-                className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700 ring-1 ring-inset ring-emerald-600/20"
+                className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700 ring-1 ring-inset ring-emerald-600/20 dark:bg-emerald-500/10 dark:text-emerald-300 dark:ring-emerald-400/30"
                 title="Verified by MedNet"
               >
                 <BadgeCheck className="h-3.5 w-3.5" aria-hidden="true" />
@@ -1078,20 +1001,15 @@ function PlaceDetails({
           </h2>
           <p className="mt-1.5 flex flex-wrap items-center gap-2 text-xs">
             <span
-              className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-medium ring-1 ring-inset ${meta.pill}`}
+              className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 font-medium ring-1 ring-inset ${meta.pill}`}
             >
               <Icon className="h-3.5 w-3.5" aria-hidden="true" />
               {meta.label}
             </span>
-            {facility.review_count > 0 && (
-              <span className="inline-flex items-center gap-1 text-slate-600">
-                <Star className="h-3.5 w-3.5 fill-amber-400 text-amber-400" aria-hidden="true" />
-                <span className="font-medium text-slate-800">{facility.rating.toFixed(1)}</span>
-                <span className="text-slate-400">({facility.review_count})</span>
-              </span>
-            )}
             {typeof facility.distance_km === 'number' && (
-              <span className="text-slate-500">{formatDistance(facility.distance_km)} away</span>
+              <span className="text-slate-500 dark:text-slate-400">
+                {formatDistance(facility.distance_km)} away
+              </span>
             )}
           </p>
         </header>
@@ -1102,29 +1020,21 @@ function PlaceDetails({
             href={directionsUrl}
             target="_blank"
             rel="noopener noreferrer"
-            className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white shadow-md shadow-emerald-600/25 transition-colors hover:bg-emerald-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2"
+            className="inline-flex flex-1 items-center justify-center gap-2 rounded-md bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white shadow-md shadow-emerald-600/25 transition-colors hover:bg-emerald-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 dark:hover:bg-emerald-500 dark:focus-visible:ring-offset-slate-900"
           >
             <Navigation className="h-4 w-4" aria-hidden="true" />
             Directions
             <span className="sr-only"> to {facility.name} (opens in a new tab)</span>
           </a>
           {phoneHref && (
-            <a
-              href={phoneHref}
-              className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 transition-colors hover:border-teal-300 hover:bg-teal-50 hover:text-teal-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 focus-visible:ring-offset-2"
-            >
+            <a href={phoneHref} className={SECONDARY_ACTION}>
               <Phone className="h-4 w-4" aria-hidden="true" />
               Call
               <span className="sr-only"> {facility.name} on {facility.phone}</span>
             </a>
           )}
           {website && (
-            <a
-              href={website}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 transition-colors hover:border-teal-300 hover:bg-teal-50 hover:text-teal-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 focus-visible:ring-offset-2"
-            >
+            <a href={website} target="_blank" rel="noopener noreferrer" className={SECONDARY_ACTION}>
               <Globe className="h-4 w-4" aria-hidden="true" />
               Website
               <span className="sr-only"> (opens in a new tab)</span>
@@ -1138,17 +1048,17 @@ function PlaceDetails({
         </section>
 
         {/* Facts */}
-        <dl className="space-y-2.5 text-sm text-slate-700">
+        <dl className="space-y-2.5 text-sm text-slate-700 dark:text-slate-300">
           <div className="flex items-start gap-3">
             <dt className="sr-only">Address</dt>
-            <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" aria-hidden="true" />
+            <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-slate-400 dark:text-slate-500" aria-hidden="true" />
             <dd>
               {facility.address}, {facility.city}, {facility.state}
             </dd>
           </div>
           <div className="flex items-start gap-3">
             <dt className="sr-only">Operating hours</dt>
-            <Clock className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" aria-hidden="true" />
+            <Clock className="mt-0.5 h-4 w-4 shrink-0 text-slate-400 dark:text-slate-500" aria-hidden="true" />
             <dd className="flex flex-wrap items-center gap-2">
               <span>{facility.operating_hours}</span>
               {facility.is_open_24_7 && <MiniBadge tone="teal">Open 24/7</MiniBadge>}
@@ -1157,14 +1067,14 @@ function PlaceDetails({
           {facility.has_emergency_services && (
             <div className="flex items-start gap-3">
               <dt className="sr-only">Emergency services</dt>
-              <Ambulance className="mt-0.5 h-4 w-4 shrink-0 text-red-500" aria-hidden="true" />
+              <Ambulance className="mt-0.5 h-4 w-4 shrink-0 text-red-500 dark:text-red-400" aria-hidden="true" />
               <dd>Emergency services available</dd>
             </div>
           )}
           {facility.phone && (
             <div className="flex items-start gap-3">
               <dt className="sr-only">Phone</dt>
-              <Phone className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" aria-hidden="true" />
+              <Phone className="mt-0.5 h-4 w-4 shrink-0 text-slate-400 dark:text-slate-500" aria-hidden="true" />
               <dd>
                 {phoneHref ? (
                   <a href={phoneHref} className="underline-offset-2 hover:underline">
@@ -1179,7 +1089,7 @@ function PlaceDetails({
           {email && (
             <div className="flex items-start gap-3">
               <dt className="sr-only">Email</dt>
-              <Mail className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" aria-hidden="true" />
+              <Mail className="mt-0.5 h-4 w-4 shrink-0 text-slate-400 dark:text-slate-500" aria-hidden="true" />
               <dd className="break-all">
                 <a href={`mailto:${email}`} className="underline-offset-2 hover:underline">
                   {email}
@@ -1195,8 +1105,12 @@ function PlaceDetails({
 
         {facility.description && (
           <section>
-            <h3 className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-500">About</h3>
-            <p className="text-sm leading-relaxed text-slate-700">{facility.description}</p>
+            <h3 className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
+              About
+            </h3>
+            <p className="text-sm leading-relaxed text-slate-700 dark:text-slate-300">
+              {facility.description}
+            </p>
           </section>
         )}
       </div>
@@ -1207,12 +1121,14 @@ function PlaceDetails({
 function TagList({ title, items }: { title: string; items: string[] }) {
   return (
     <section>
-      <h3 className="mb-1.5 text-xs font-medium uppercase tracking-wide text-slate-500">{title}</h3>
+      <h3 className="mb-1.5 text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
+        {title}
+      </h3>
       <ul className="flex flex-wrap gap-1.5">
         {items.map((item) => (
           <li
             key={item}
-            className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-700"
+            className="rounded-md bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-700 dark:bg-slate-800 dark:text-slate-200"
           >
             {item}
           </li>
@@ -1226,10 +1142,19 @@ function TagList({ title, items }: { title: string; items: string[] }) {
 /*                                Account menu                                */
 /* -------------------------------------------------------------------------- */
 
+const MENU_ITEM =
+  'flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm text-slate-700 transition-colors hover:bg-slate-100 hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 dark:text-slate-200 dark:hover:bg-slate-800 dark:hover:text-slate-100';
+
+const COVERAGE_BADGE =
+  'inline-flex max-w-full items-center gap-1 rounded-md bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700 ring-1 ring-inset ring-emerald-600/20 dark:bg-emerald-500/10 dark:text-emerald-300 dark:ring-emerald-400/30';
+
+const OUT_OF_POCKET_BADGE =
+  'inline-flex items-center gap-1 rounded-md bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600 ring-1 ring-inset ring-slate-500/20 dark:bg-slate-800 dark:text-slate-300 dark:ring-slate-500/30';
+
 /**
  * Google Maps-style account control. `pill` shows name and coverage inline
  * (top-right on wider screens); `compact` is an avatar for the search box on
- * phones. Both open the same menu with the onboarding link and sign-out.
+ * phones. Both open the same menu with settings, the HMO link and sign-out.
  */
 function AccountMenu({
   variant,
@@ -1267,7 +1192,7 @@ function AccountMenu({
     return variant === 'pill' ? (
       <Link
         href="/login"
-        className="pointer-events-auto inline-flex h-11 items-center gap-2 rounded-full bg-emerald-600 px-4 text-sm font-semibold text-white shadow-lg shadow-emerald-600/25 transition-colors hover:bg-emerald-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2"
+        className="pointer-events-auto inline-flex h-11 items-center gap-2 rounded-md bg-emerald-600 px-4 text-sm font-semibold text-white shadow-lg shadow-emerald-600/25 transition-colors hover:bg-emerald-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 dark:hover:bg-emerald-500 dark:focus-visible:ring-offset-slate-950"
       >
         <LogIn className="h-4 w-4" aria-hidden="true" />
         Sign In / Set HMO
@@ -1276,7 +1201,7 @@ function AccountMenu({
       <Link
         href="/login"
         title="Sign in or set your HMO"
-        className="pointer-events-auto flex h-9 w-9 items-center justify-center rounded-full bg-emerald-600 text-white transition-colors hover:bg-emerald-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+        className="pointer-events-auto flex h-9 w-9 items-center justify-center rounded-md bg-emerald-600 text-white transition-colors hover:bg-emerald-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 dark:hover:bg-emerald-500"
       >
         <LogIn className="h-4 w-4" aria-hidden="true" />
         <span className="sr-only">Sign in or set your HMO</span>
@@ -1293,9 +1218,21 @@ function AccountMenu({
   const avatar = (
     <span
       aria-hidden="true"
-      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-xs font-semibold text-white"
+      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-emerald-600 text-xs font-semibold text-white"
     >
       {initials}
+    </span>
+  );
+
+  const coverageBadge = coverage ? (
+    <span className={COVERAGE_BADGE}>
+      <ShieldCheck className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+      <span className="truncate">{coverage}</span>
+    </span>
+  ) : (
+    <span className={OUT_OF_POCKET_BADGE}>
+      <Wallet className="h-3.5 w-3.5" aria-hidden="true" />
+      Out-of-Pocket
     </span>
   );
 
@@ -1309,26 +1246,16 @@ function AccountMenu({
         title={profile.full_name}
         className={
           variant === 'pill'
-            ? 'flex h-11 items-center gap-2 rounded-full bg-white pl-1.5 pr-3 text-sm shadow-lg ring-1 ring-slate-900/5 transition-colors hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500'
-            : 'flex h-9 w-9 items-center justify-center rounded-full transition-colors hover:bg-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500'
+            ? `flex h-11 items-center gap-2 rounded-md pl-1.5 pr-3 text-sm transition-colors hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 dark:hover:bg-slate-800 ${SURFACE}`
+            : 'flex h-9 w-9 items-center justify-center rounded-md transition-colors hover:bg-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 dark:hover:bg-slate-800'
         }
       >
         {avatar}
         {variant === 'pill' && (
           <>
             <span className="max-w-[9rem] truncate font-medium">{profile.full_name}</span>
-            {coverage ? (
-              <span className="inline-flex max-w-[11rem] items-center gap-1 truncate rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700 ring-1 ring-inset ring-emerald-600/20">
-                <ShieldCheck className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-                <span className="truncate">{coverage}</span>
-              </span>
-            ) : (
-              <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600 ring-1 ring-inset ring-slate-500/20">
-                <Wallet className="h-3.5 w-3.5" aria-hidden="true" />
-                Out-of-Pocket
-              </span>
-            )}
-            <ChevronDown className="h-4 w-4 text-slate-400" aria-hidden="true" />
+            <span className="max-w-[11rem]">{coverageBadge}</span>
+            <ChevronDown className="h-4 w-4 text-slate-400 dark:text-slate-500" aria-hidden="true" />
           </>
         )}
         <span className="sr-only">Account menu</span>
@@ -1337,32 +1264,20 @@ function AccountMenu({
       {open && (
         <div
           role="menu"
-          className="absolute right-0 top-full z-30 mt-2 w-64 rounded-2xl bg-white p-2 text-slate-900 shadow-xl ring-1 ring-slate-900/5"
+          className="absolute right-0 top-full z-30 mt-2 w-64 rounded-lg bg-white p-2 text-slate-900 shadow-xl ring-1 ring-slate-900/5 dark:bg-slate-900 dark:text-slate-100 dark:ring-white/10"
         >
           <div className="px-2 pb-2 pt-1.5">
             <p className="truncate text-sm font-semibold">{profile.full_name}</p>
-            <p className="truncate text-xs text-slate-500">{profile.email}</p>
-            <p className="mt-2">
-              {coverage ? (
-                <span className="inline-flex max-w-full items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700 ring-1 ring-inset ring-emerald-600/20">
-                  <ShieldCheck className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-                  <span className="truncate">{coverage}</span>
-                </span>
-              ) : (
-                <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600 ring-1 ring-inset ring-slate-500/20">
-                  <Wallet className="h-3.5 w-3.5" aria-hidden="true" />
-                  Out-of-Pocket
-                </span>
-              )}
-            </p>
+            <p className="truncate text-xs text-slate-500 dark:text-slate-400">{profile.email}</p>
+            <p className="mt-2">{coverageBadge}</p>
           </div>
-          <div className="border-t border-slate-100 pt-1">
-            <Link
-              role="menuitem"
-              href="/onboarding"
-              className="flex items-center gap-2 rounded-xl px-2 py-2 text-sm text-slate-700 transition-colors hover:bg-slate-100 hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
-            >
-              <Settings2 className="h-4 w-4 text-slate-400" aria-hidden="true" />
+          <div className="border-t border-slate-100 pt-1 dark:border-slate-800">
+            <Link role="menuitem" href="/settings" className={MENU_ITEM}>
+              <Settings className="h-4 w-4 text-slate-400 dark:text-slate-500" aria-hidden="true" />
+              Settings
+            </Link>
+            <Link role="menuitem" href="/settings#hmo" className={MENU_ITEM}>
+              <ShieldCheck className="h-4 w-4 text-slate-400 dark:text-slate-500" aria-hidden="true" />
               Update HMO Plan
             </Link>
             <button
@@ -1370,12 +1285,12 @@ function AccountMenu({
               role="menuitem"
               onClick={onSignOut}
               disabled={signingOut}
-              className="flex w-full items-center gap-2 rounded-xl px-2 py-2 text-left text-sm text-slate-700 transition-colors hover:bg-slate-100 hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 disabled:opacity-60"
+              className={`${MENU_ITEM} disabled:opacity-60`}
             >
               {signingOut ? (
-                <Loader2 className="h-4 w-4 animate-spin text-slate-400" aria-hidden="true" />
+                <Loader2 className="h-4 w-4 animate-spin text-slate-400 dark:text-slate-500" aria-hidden="true" />
               ) : (
-                <LogOut className="h-4 w-4 text-slate-400" aria-hidden="true" />
+                <LogOut className="h-4 w-4 text-slate-400 dark:text-slate-500" aria-hidden="true" />
               )}
               Sign Out
             </button>

@@ -1,26 +1,45 @@
 @import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+/*
+ * Dark mode is class-driven: the theme engine (src/lib/theme.ts and
+ * src/components/ThemeProvider.tsx) keeps `.dark` on <html>, so `dark:`
+ * utilities follow the user's choice (System, Light or Dark) rather than
+ * only the OS setting.
+ */
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  color-scheme: light;
+}
+
+.dark {
+  color-scheme: dark;
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+body {
+  @apply bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100;
+  font-family: Arial, Helvetica, sans-serif;
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+/*
+ * Leaflet map theming. Tiles come from the standard OpenStreetMap server in
+ * both themes; dark mode re-colours the tile pane with a filter so no
+ * keyed basemap service is involved. Markers, tooltips and controls live in
+ * other panes and keep their own colours.
+ */
+.leaflet-container {
+  background: #f8fafc; /* slate-50 */
+}
+
+.dark .leaflet-container {
+  background: #0f172a; /* slate-900 */
+}
+
+.dark .leaflet-tile-pane {
+  filter: brightness(0.85) invert(1) contrast(1.1) hue-rotate(200deg) saturate(0.4);
 }

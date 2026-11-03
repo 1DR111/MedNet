@@ -14,6 +14,11 @@
  *
  * Leaflet's own zoom control is disabled: the parent renders its own buttons
  * and drives the map through `mapRef` (`zoomIn()`, `zoomOut()`, `flyTo()`).
+ *
+ * Tiles always come from the standard OpenStreetMap server, which needs no
+ * API key. Dark mode is handled in `globals.css`: the tile pane is
+ * re-coloured with a CSS filter under `.dark`, and the marker, tooltip and
+ * attribution colours below adapt with the same class.
  */
 
 import { useCallback, useEffect, useMemo, useRef, type RefObject } from 'react';
@@ -35,6 +40,12 @@ const SELECTED_ZOOM = 15;
 const USER_ZOOM = 14;
 /** Smallest free width/height (px) kept for a flight target after padding. */
 const MIN_FREE_AREA = 80;
+
+/** Standard OpenStreetMap raster tiles: free, no key, 19 zoom levels. */
+const TILE_URL = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
+const TILE_ATTRIBUTION =
+  '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors';
+const TILE_MAX_ZOOM = 19;
 
 /**
  * Screen areas, in pixels, covered by floating UI. Flights place their target
@@ -107,7 +118,7 @@ function getUserIcon(): L.DivIcon {
   if (cached) return cached;
   const icon = L.divIcon({
     className: 'mednet-marker',
-    html: `<span class="mednet-user" style="--user-color:${USER_COLOR}"><span class="mednet-user__pulse"></span><span class="mednet-user__dot"></span></span>`,
+    html: `<span class="mednet-user" style="--user-color:${USER_COLOR}"><span class="mednet-user__halo"></span><span class="mednet-user__dot"></span></span>`,
     iconSize: [24, 24],
     iconAnchor: [12, 12],
     tooltipAnchor: [0, -12],
@@ -116,7 +127,11 @@ function getUserIcon(): L.DivIcon {
   return icon;
 }
 
-/** Styles for the div icons and tooltips. Scoped by class so they never leak out of the map. */
+/**
+ * Styles for the div icons, tooltips and attribution in both themes. Scoped by
+ * class so they never leak out of the map. The `.dark` rules key off the class
+ * the theme engine keeps on `<html>`.
+ */
 const MARKER_CSS = `
 .mednet-marker { background: transparent; border: 0; }
 .mednet-pin {
@@ -131,6 +146,10 @@ const MARKER_CSS = `
 }
 .mednet-pin--selected {
   box-shadow: 0 0 0 3px #fff, 0 0 0 7px color-mix(in srgb, var(--pin-color) 45%, transparent), 0 4px 10px rgba(15, 23, 42, 0.4);
+}
+.dark .mednet-pin { box-shadow: 0 0 0 2px #0f172a, 0 2px 6px rgba(0, 0, 0, 0.6); }
+.dark .mednet-pin--selected {
+  box-shadow: 0 0 0 3px #0f172a, 0 0 0 7px color-mix(in srgb, var(--pin-color) 55%, transparent), 0 4px 10px rgba(0, 0, 0, 0.7);
 }
 .mednet-pin__glyph {
   position: absolute;
@@ -149,33 +168,37 @@ const MARKER_CSS = `
   background: var(--user-color);
   box-shadow: 0 0 0 2px #fff, 0 1px 4px rgba(15, 23, 42, 0.4);
 }
-.mednet-user__pulse {
+.dark .mednet-user__dot { box-shadow: 0 0 0 2px #0f172a, 0 1px 4px rgba(0, 0, 0, 0.6); }
+.mednet-user__halo {
   position: absolute; inset: 0; border-radius: 9999px;
-  background: var(--user-color); opacity: 0.35;
-  animation: mednet-pulse 2s ease-out infinite;
-}
-@keyframes mednet-pulse {
-  0% { transform: scale(0.6); opacity: 0.5; }
-  100% { transform: scale(1.8); opacity: 0; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .mednet-user__pulse { animation: none; opacity: 0.25; }
+  background: var(--user-color); opacity: 0.25;
 }
 .leaflet-tooltip.mednet-tooltip {
   padding: 4px 10px;
   border: 0;
-  border-radius: 9999px;
+  border-radius: 6px;
   background: #0f172a;
   color: #fff;
   font: 600 12px/1.4 system-ui, -apple-system, 'Segoe UI', sans-serif;
   box-shadow: 0 4px 12px rgba(15, 23, 42, 0.25);
 }
 .leaflet-tooltip.mednet-tooltip::before { border-top-color: #0f172a; }
+.dark .leaflet-tooltip.mednet-tooltip {
+  background: #f1f5f9;
+  color: #0f172a;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+}
+.dark .leaflet-tooltip.mednet-tooltip::before { border-top-color: #f1f5f9; }
 .leaflet-container .leaflet-control-attribution {
-  border-radius: 9999px 9999px 0 0;
+  border-radius: 6px 6px 0 0;
   padding: 2px 10px;
   font-size: 10px;
 }
+.dark .leaflet-container .leaflet-control-attribution {
+  background: rgba(2, 6, 23, 0.85);
+  color: #94a3b8;
+}
+.dark .leaflet-container .leaflet-control-attribution a { color: #cbd5e1; }
 `;
 
 /* -------------------------------------------------------------------------- */
@@ -192,7 +215,7 @@ export interface FacilityMapProps {
   userLocation?: [number, number] | null;
   /**
    * Bump this to fly to `userLocation` again even when the coordinates have
-   * not changed (e.g. a second press of a "Locate me" button).
+   * not changed (e.g. a second request to centre on the patient).
    */
   userLocationRevision?: number;
   /**
@@ -236,10 +259,7 @@ export default function FacilityMap({
         className="h-full w-full"
         style={{ height: '100%', width: '100%' }}
       >
-        <TileLayer
-          attribution='&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors'
-          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-        />
+        <TileLayer url={TILE_URL} attribution={TILE_ATTRIBUTION} maxZoom={TILE_MAX_ZOOM} />
         <AttributionControl position="bottomleft" prefix={false} />
 
         {facilities.map((facility) => (
@@ -377,7 +397,7 @@ function MapController({
   }, [flyWithPadding, selectedFacilityId, selectedLat, selectedLng]);
 
   // Fly to the patient when their location arrives, and again on every
-  // `userLocationRevision` bump (a repeat "Locate me" press).
+  // `userLocationRevision` bump.
   const userLat = userLocation?.[0];
   const userLng = userLocation?.[1];
   useEffect(() => {

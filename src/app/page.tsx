@@ -4,8 +4,8 @@ import { fetchFacilitiesWithHMOs } from '@/lib/facilities';
 import { createClient } from '@/lib/supabase/server';
 import type { Hmo, PatientProfile } from '@/types/database';
 
+// The title comes from the root layout; only the description is page-specific.
 export const metadata: Metadata = {
-  title: 'MedNet · Verified Healthcare Discovery in Abuja',
   description:
     'Find verified hospitals, clinics, pharmacies and labs in Abuja that accept your HMO plan.',
 };

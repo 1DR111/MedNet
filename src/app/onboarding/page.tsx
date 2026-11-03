@@ -14,23 +14,11 @@ import {
   MapPin,
   ShieldCheck,
 } from 'lucide-react';
+import { CITIES, DEFAULT_CITY, isKnownCity } from '@/lib/cities';
+import { writeSavedCoverage } from '@/lib/coverage';
 import { PLAN_TIER_GROUPS, isPatientPlanTier, type PatientPlanTier } from '@/lib/plans';
 import { createClient } from '@/lib/supabase/client';
 import type { Hmo, PatientProfile } from '@/types/database';
-
-const DEFAULT_CITY = 'Abuja';
-const CITIES = [
-  'Abuja',
-  'Lagos',
-  'Port Harcourt',
-  'Kano',
-  'Ibadan',
-  'Enugu',
-  'Kaduna',
-  'Benin City',
-  'Jos',
-  'Calabar',
-] as const;
 
 type ExistingProfile = Pick<
   PatientProfile,
@@ -44,10 +32,6 @@ type ExistingProfile = Pick<
 >;
 
 type PageStatus = 'loading' | 'ready' | 'error';
-
-function isKnownCity(value: unknown): value is (typeof CITIES)[number] {
-  return typeof value === 'string' && (CITIES as readonly string[]).includes(value);
-}
 
 export default function OnboardingPage() {
   const router = useRouter();
@@ -188,7 +172,11 @@ export default function OnboardingPage() {
       return;
     }
 
-    router.replace('/');
+    // Mirror on this device so the map recognises the plan before its next
+    // server round trip.
+    writeSavedCoverage(coverage);
+
+    router.push('/');
     router.refresh();
   }
 
@@ -233,30 +221,28 @@ export default function OnboardingPage() {
   const selectedHmo = hmos.find((h) => h.id === hmoId) ?? null;
 
   return (
-    <div className="flex min-h-screen flex-1 flex-col bg-gradient-to-br from-emerald-50 via-white to-teal-50 text-slate-900">
+    <div className="flex min-h-screen flex-1 flex-col bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
       <main className="flex flex-1 items-center justify-center px-4 py-12">
         <div className="w-full max-w-lg">
           {/* Brand */}
           <div className="mb-8 flex flex-col items-center text-center">
-            <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-emerald-600 text-white shadow-lg shadow-emerald-600/30">
+            <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-lg bg-emerald-600 text-white shadow-lg shadow-emerald-600/30">
               <HeartPulse className="h-7 w-7" aria-hidden="true" />
             </div>
-            <h1 className="text-2xl font-semibold tracking-tight text-slate-900">
-              Personalise your search
-            </h1>
-            <p className="mt-1 max-w-sm text-sm text-slate-600">
+            <h1 className="text-2xl font-semibold tracking-tight">Personalise your search</h1>
+            <p className="mt-1 max-w-sm text-sm text-slate-600 dark:text-slate-300">
               Add your HMO plan and preferred city to see which hospitals, clinics, pharmacies and
               labs accept your coverage. You can update this at any time.
             </p>
           </div>
 
-          <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-xl shadow-slate-900/5 sm:p-8">
+          <div className="rounded-lg border border-slate-200 bg-white p-6 shadow-xl shadow-slate-900/5 dark:border-slate-800 dark:bg-slate-900 dark:shadow-black/30 sm:p-8">
             {status === 'loading' && (
               <div
                 role="status"
-                className="flex flex-col items-center justify-center gap-3 py-12 text-sm text-slate-500"
+                className="flex flex-col items-center justify-center gap-3 py-12 text-sm text-slate-500 dark:text-slate-400"
               >
-                <Loader2 className="h-6 w-6 animate-spin text-emerald-600" aria-hidden="true" />
+                <Loader2 className="h-6 w-6 animate-spin text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
                 Loading your profile…
               </div>
             )}
@@ -265,7 +251,7 @@ export default function OnboardingPage() {
               <div className="space-y-4">
                 <div
                   role="alert"
-                  className="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-700"
+                  className="flex items-start gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-700 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-300"
                 >
                   <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
                   <span>{loadError}</span>
@@ -273,7 +259,7 @@ export default function OnboardingPage() {
                 <button
                   type="button"
                   onClick={() => window.location.reload()}
-                  className="w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                  className="w-full rounded-md border border-slate-200 px-4 py-2.5 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
                 >
                   Try again
                 </button>
@@ -284,8 +270,8 @@ export default function OnboardingPage() {
               <form onSubmit={handleSave} className="space-y-6" noValidate>
                 {/* Coverage question */}
                 <fieldset>
-                  <legend className="flex items-center gap-2 text-sm font-semibold text-slate-900">
-                    <ShieldCheck className="h-4 w-4 text-emerald-600" aria-hidden="true" />
+                  <legend className="flex items-center gap-2 text-sm font-semibold">
+                    <ShieldCheck className="h-4 w-4 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
                     Do you have Health Insurance (HMO) coverage?
                   </legend>
                   <div className="mt-3 grid grid-cols-2 gap-3">
@@ -310,7 +296,7 @@ export default function OnboardingPage() {
 
                 {/* HMO details */}
                 {hasHmo && (
-                  <div className="space-y-4 rounded-xl border border-emerald-100 bg-emerald-50/50 p-4">
+                  <div className="space-y-4 rounded-md border border-emerald-100 bg-emerald-50/50 p-4 dark:border-emerald-900/50 dark:bg-emerald-950/20">
                     <SelectField
                       id="hmo_id"
                       label="Your HMO"
@@ -373,7 +359,7 @@ export default function OnboardingPage() {
                 {error && (
                   <div
                     role="alert"
-                    className="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-700"
+                    className="flex items-start gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-700 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-300"
                   >
                     <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
                     <span>{error}</span>
@@ -384,7 +370,7 @@ export default function OnboardingPage() {
                   <button
                     type="submit"
                     disabled={busy}
-                    className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white shadow-md shadow-emerald-600/25 transition-colors hover:bg-emerald-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60"
+                    className="flex flex-1 items-center justify-center gap-2 rounded-md bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white shadow-md shadow-emerald-600/25 transition-colors hover:bg-emerald-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60 dark:hover:bg-emerald-500 dark:focus-visible:ring-offset-slate-900"
                   >
                     {submitting === 'save' ? (
                       <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
@@ -397,7 +383,7 @@ export default function OnboardingPage() {
                     type="button"
                     onClick={handleSkip}
                     disabled={busy}
-                    className="flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60"
+                    className="flex items-center justify-center gap-2 rounded-md border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800 dark:focus-visible:ring-offset-slate-900"
                   >
                     {submitting === 'skip' && (
                       <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
@@ -409,7 +395,7 @@ export default function OnboardingPage() {
             )}
           </div>
 
-          <p className="mt-6 text-center text-xs text-slate-500">
+          <p className="mt-6 text-center text-xs text-slate-500 dark:text-slate-400">
             Your plan details are only used to match you with facilities and are never shared.
           </p>
         </div>
@@ -435,10 +421,10 @@ function ToggleOption({
 }) {
   return (
     <label
-      className={`flex cursor-pointer flex-col rounded-xl border px-4 py-3 transition-colors focus-within:ring-2 focus-within:ring-emerald-500/40 ${
+      className={`flex cursor-pointer flex-col rounded-md border px-4 py-3 transition-colors focus-within:ring-2 focus-within:ring-emerald-500/40 ${
         checked
-          ? 'border-emerald-500 bg-emerald-50 text-emerald-900'
-          : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300'
+          ? 'border-emerald-500 bg-emerald-50 text-emerald-900 dark:bg-emerald-500/10 dark:text-emerald-100'
+          : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:border-slate-600'
       }`}
     >
       <input
@@ -450,7 +436,11 @@ function ToggleOption({
         className="sr-only"
       />
       <span className="text-sm font-semibold">{title}</span>
-      <span className={`text-xs ${checked ? 'text-emerald-700' : 'text-slate-500'}`}>
+      <span
+        className={`text-xs ${
+          checked ? 'text-emerald-700 dark:text-emerald-300' : 'text-slate-500 dark:text-slate-400'
+        }`}
+      >
         {description}
       </span>
     </label>
@@ -479,17 +469,17 @@ function SelectField({
   return (
     <div>
       <div className="mb-1.5 flex items-baseline justify-between">
-        <label htmlFor={id} className="text-sm font-medium text-slate-700">
+        <label htmlFor={id} className="text-sm font-medium text-slate-700 dark:text-slate-200">
           {label}
         </label>
         {hint && (
-          <span id={`${id}-hint`} className="text-xs text-slate-400">
+          <span id={`${id}-hint`} className="text-xs text-slate-400 dark:text-slate-500">
             {hint}
           </span>
         )}
       </div>
       <div className="relative">
-        <span className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-slate-400">
+        <span className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-slate-400 dark:text-slate-500">
           {icon}
         </span>
         <select
@@ -499,11 +489,11 @@ function SelectField({
           required={required}
           aria-describedby={hint ? `${id}-hint` : undefined}
           onChange={(e) => onChange(e.target.value)}
-          className="block w-full appearance-none rounded-xl border border-slate-300 bg-white py-2.5 pl-10 pr-10 text-sm text-slate-900 shadow-sm transition-colors focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
+          className="block w-full appearance-none rounded-md border border-slate-300 bg-white py-2.5 pl-10 pr-10 text-sm text-slate-900 shadow-sm transition-colors focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
         >
           {children}
         </select>
-        <span className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-3 text-slate-400">
+        <span className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-3 text-slate-400 dark:text-slate-500">
           <ChevronDown className="h-4 w-4" aria-hidden="true" />
         </span>
       </div>

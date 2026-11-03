@@ -13,7 +13,6 @@ import {
   Pill,
   ShieldAlert,
   ShieldCheck,
-  Star,
   Stethoscope,
 } from 'lucide-react';
 import { ALL_TIERS_WILDCARD, findHmoMatch, type FacilityWithHMO } from '@/lib/facilities';
@@ -34,13 +33,25 @@ export interface FacilityCardProps {
 
 /** Label, icon and pill colours per facility type; shared with the discovery drawer. */
 export const TYPE_META: Record<FacilityType, { label: string; icon: typeof Building2; pill: string }> = {
-  hospital: { label: 'Hospital', icon: Building2, pill: 'bg-teal-50 text-teal-700 ring-teal-600/20' },
-  clinic: { label: 'Clinic', icon: Stethoscope, pill: 'bg-sky-50 text-sky-700 ring-sky-600/20' },
-  pharmacy: { label: 'Pharmacy', icon: Pill, pill: 'bg-violet-50 text-violet-700 ring-violet-600/20' },
+  hospital: {
+    label: 'Hospital',
+    icon: Building2,
+    pill: 'bg-teal-50 text-teal-700 ring-teal-600/20 dark:bg-teal-500/10 dark:text-teal-300 dark:ring-teal-400/30',
+  },
+  clinic: {
+    label: 'Clinic',
+    icon: Stethoscope,
+    pill: 'bg-sky-50 text-sky-700 ring-sky-600/20 dark:bg-sky-500/10 dark:text-sky-300 dark:ring-sky-400/30',
+  },
+  pharmacy: {
+    label: 'Pharmacy',
+    icon: Pill,
+    pill: 'bg-violet-50 text-violet-700 ring-violet-600/20 dark:bg-violet-500/10 dark:text-violet-300 dark:ring-violet-400/30',
+  },
   laboratory: {
     label: 'Laboratory',
     icon: FlaskConical,
-    pill: 'bg-amber-50 text-amber-700 ring-amber-600/20',
+    pill: 'bg-amber-50 text-amber-700 ring-amber-600/20 dark:bg-amber-500/10 dark:text-amber-300 dark:ring-amber-400/30',
   },
 };
 
@@ -74,10 +85,10 @@ export default function FacilityCard({
     <article
       onClick={onSelect ? handleSelect : undefined}
       data-selected={isSelected || undefined}
-      className={`group relative flex flex-col gap-4 rounded-2xl border bg-white p-5 text-slate-900 shadow-sm transition-shadow ${
+      className={`group relative flex flex-col gap-4 rounded-lg border bg-white p-5 text-slate-900 shadow-sm transition-shadow dark:bg-slate-900 dark:text-slate-100 ${
         isSelected
           ? 'border-emerald-500 ring-2 ring-emerald-500/30 shadow-md'
-          : 'border-slate-200 hover:border-slate-300 hover:shadow-md'
+          : 'border-slate-200 hover:border-slate-300 hover:shadow-md dark:border-slate-800 dark:hover:border-slate-700'
       } ${onSelect ? 'cursor-pointer' : ''} ${className}`}
     >
       {/* Header */}
@@ -92,16 +103,18 @@ export default function FacilityCard({
                   handleSelect();
                 }}
                 aria-pressed={isSelected}
-                className="truncate text-left text-base font-semibold text-slate-900 underline-offset-2 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 rounded-sm"
+                className="truncate rounded-sm text-left text-base font-semibold text-slate-900 underline-offset-2 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 dark:text-slate-100 dark:focus-visible:ring-offset-slate-900"
               >
                 {facility.name}
               </button>
             ) : (
-              <h3 className="truncate text-base font-semibold text-slate-900">{facility.name}</h3>
+              <h3 className="truncate text-base font-semibold text-slate-900 dark:text-slate-100">
+                {facility.name}
+              </h3>
             )}
             {facility.is_verified && (
               <span
-                className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700 ring-1 ring-inset ring-emerald-600/20"
+                className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700 ring-1 ring-inset ring-emerald-600/20 dark:bg-emerald-500/10 dark:text-emerald-300 dark:ring-emerald-400/30"
                 title="Verified by MedNet"
               >
                 <BadgeCheck className="h-3.5 w-3.5" aria-hidden="true" />
@@ -112,37 +125,32 @@ export default function FacilityCard({
 
           <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs">
             <span
-              className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-medium ring-1 ring-inset ${typeMeta.pill}`}
+              className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 font-medium ring-1 ring-inset ${typeMeta.pill}`}
             >
               <TypeIcon className="h-3.5 w-3.5" aria-hidden="true" />
               {typeMeta.label}
             </span>
-            {facility.review_count > 0 && (
-              <span className="inline-flex items-center gap-1 text-slate-600">
-                <Star className="h-3.5 w-3.5 fill-amber-400 text-amber-400" aria-hidden="true" />
-                <span className="font-medium text-slate-800">{facility.rating.toFixed(1)}</span>
-                <span className="text-slate-400">({facility.review_count})</span>
-              </span>
-            )}
             {typeof facility.distance_km === 'number' && (
-              <span className="text-slate-500">{formatDistance(facility.distance_km)} away</span>
+              <span className="text-slate-500 dark:text-slate-400">
+                {formatDistance(facility.distance_km)} away
+              </span>
             )}
           </div>
         </div>
       </header>
 
       {/* Location and hours */}
-      <dl className="space-y-1.5 text-sm text-slate-600">
+      <dl className="space-y-1.5 text-sm text-slate-600 dark:text-slate-300">
         <div className="flex items-start gap-2">
           <dt className="sr-only">Address</dt>
-          <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" aria-hidden="true" />
+          <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-slate-400 dark:text-slate-500" aria-hidden="true" />
           <dd>
             {facility.address}, {facility.city}
           </dd>
         </div>
         <div className="flex items-start gap-2">
           <dt className="sr-only">Operating hours</dt>
-          <Clock className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" aria-hidden="true" />
+          <Clock className="mt-0.5 h-4 w-4 shrink-0 text-slate-400 dark:text-slate-500" aria-hidden="true" />
           <dd className="flex flex-wrap items-center gap-2">
             <span>{facility.operating_hours}</span>
             {facility.is_open_24_7 && <Badge tone="teal">Open 24/7</Badge>}
@@ -168,7 +176,7 @@ export default function FacilityCard({
           target="_blank"
           rel="noopener noreferrer"
           onClick={stopSelect}
-          className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl bg-emerald-600 px-3 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-emerald-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2"
+          className="inline-flex flex-1 items-center justify-center gap-2 rounded-md bg-emerald-600 px-3 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-emerald-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 dark:hover:bg-emerald-500 dark:focus-visible:ring-offset-slate-900"
         >
           <Navigation className="h-4 w-4" aria-hidden="true" />
           Get Directions
@@ -178,7 +186,7 @@ export default function FacilityCard({
           <a
             href={phoneHref}
             onClick={stopSelect}
-            className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition-colors hover:border-teal-300 hover:bg-teal-50 hover:text-teal-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 focus-visible:ring-offset-2"
+            className="inline-flex flex-1 items-center justify-center gap-2 rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition-colors hover:border-teal-300 hover:bg-teal-50 hover:text-teal-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 focus-visible:ring-offset-2 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:border-teal-700 dark:hover:bg-teal-950/40 dark:hover:text-teal-200 dark:focus-visible:ring-offset-slate-900"
           >
             <Phone className="h-4 w-4" aria-hidden="true" />
             Call
@@ -209,11 +217,11 @@ export function HmoCompatibility({
     const tiers = match.accepted_tiers.map((t) => t.trim());
     const acceptsAll = tiers.includes(ALL_TIERS_WILDCARD);
     return (
-      <div className="flex items-start gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-sm text-emerald-800">
-        <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" aria-hidden="true" />
+      <div className="flex items-start gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-sm text-emerald-800 dark:border-emerald-900/60 dark:bg-emerald-950/40 dark:text-emerald-200">
+        <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
         <p>
           <span className="font-semibold">Accepts your {hmoName} plan.</span>{' '}
-          <span className="text-emerald-700">
+          <span className="text-emerald-700 dark:text-emerald-300">
             {acceptsAll ? 'All plans covered.' : `Covers ${formatList(tiers)}.`}
           </span>
         </p>
@@ -226,27 +234,27 @@ export function HmoCompatibility({
   return (
     <div className="space-y-2">
       {hasActiveCoverage && (
-        <div className="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 text-sm text-amber-800">
-          <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" aria-hidden="true" />
+        <div className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2.5 text-sm text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-200">
+          <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" aria-hidden="true" />
           <p>Not listed for your plan. Confirm coverage with the facility before visiting.</p>
         </div>
       )}
 
       {listed.length > 0 ? (
         <div className="text-sm">
-          <p className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-500">
+          <p className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
             Accepted HMO plans
           </p>
-          <ul className="space-y-1 text-slate-700">
+          <ul className="space-y-1 text-slate-700 dark:text-slate-300">
             {listed.map((row) => {
               const tiers = row.accepted_tiers.map((t) => t.trim());
               const acceptsAll = tiers.includes(ALL_TIERS_WILDCARD);
               return (
                 <li key={row.hmo_id} className="flex items-start gap-2">
-                  <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" aria-hidden="true" />
+                  <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-slate-400 dark:text-slate-500" aria-hidden="true" />
                   <span>
-                    <span className="font-medium text-slate-800">{row.hmos?.name}</span>
-                    <span className="text-slate-500">
+                    <span className="font-medium text-slate-800 dark:text-slate-100">{row.hmos?.name}</span>
+                    <span className="text-slate-500 dark:text-slate-400">
                       {' '}
                       · {acceptsAll ? 'All plans' : tiers.length ? tiers.join(', ') : 'Plans not specified'}
                     </span>
@@ -258,7 +266,9 @@ export function HmoCompatibility({
         </div>
       ) : (
         !hasActiveCoverage && (
-          <p className="text-sm text-slate-500">No HMO plans listed. Direct payment only.</p>
+          <p className="text-sm text-slate-500 dark:text-slate-400">
+            No HMO plans listed. Direct payment only.
+          </p>
         )
       )}
     </div>
@@ -288,13 +298,16 @@ export function SpecialtyPills({
       {shown.map((item) => (
         <li
           key={item}
-          className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600 ring-1 ring-inset ring-slate-900/5"
+          className="rounded-md bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600 ring-1 ring-inset ring-slate-900/5 dark:bg-slate-800 dark:text-slate-300 dark:ring-white/10"
         >
           {item}
         </li>
       ))}
       {hidden > 0 && (
-        <li className="text-[11px] text-slate-400" title={items.slice(limit).join(', ')}>
+        <li
+          className="text-[11px] text-slate-400 dark:text-slate-500"
+          title={items.slice(limit).join(', ')}
+        >
           +{hidden} more
         </li>
       )}
@@ -312,12 +325,12 @@ function Badge({
   children: ReactNode;
 }) {
   const tones = {
-    teal: 'bg-teal-50 text-teal-700 ring-teal-600/20',
-    red: 'bg-red-50 text-red-700 ring-red-600/20',
+    teal: 'bg-teal-50 text-teal-700 ring-teal-600/20 dark:bg-teal-500/10 dark:text-teal-300 dark:ring-teal-400/30',
+    red: 'bg-red-50 text-red-700 ring-red-600/20 dark:bg-red-500/10 dark:text-red-300 dark:ring-red-400/30',
   } as const;
   return (
     <span
-      className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${tones[tone]}`}
+      className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${tones[tone]}`}
     >
       {icon}
       {children}

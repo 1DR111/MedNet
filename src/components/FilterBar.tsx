@@ -1,7 +1,6 @@
 'use client';
 
 import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode, type Ref } from 'react';
-import Link from 'next/link';
 import {
   Ambulance,
   Building2,
@@ -19,7 +18,7 @@ import {
 } from 'lucide-react';
 import type { FacilityFilters } from '@/lib/facilities';
 import { PLAN_TIER_GROUPS } from '@/lib/plans';
-import type { FacilityType, Hmo, PatientProfile } from '@/types/database';
+import type { FacilityType, Hmo } from '@/types/database';
 
 /**
  * Google Maps-style search box with a strip of filter chips underneath.
@@ -34,8 +33,13 @@ export interface FilterBarProps {
   onFilterChange: (filters: FacilityFilters) => void;
   /** HMOs available in the HMO selector. */
   hmos: Hmo[];
-  /** Signed-in patient, used for the one-click "My HMO Plan" chip. */
-  patientProfile?: PatientProfile | null;
+  /**
+   * The patient's saved coverage, if any. The "My HMO Plan" chip shows as
+   * active while the filters match it. What a click does is decided by the
+   * parent through `onMyPlanClick` (toggle, or send the user to set a plan).
+   */
+  myPlan?: { hmoId: string; planTier: string | null; label: string } | null;
+  onMyPlanClick?: () => void;
   /** Called with the trimmed query when the search form is submitted. */
   onSearchSubmit?: (query: string) => void;
   /** Whether the drawer below the bar is expanded. */
@@ -68,8 +72,12 @@ export const EMPTY_FILTERS: FacilityFilters = {
   onlyEmergency: false,
 };
 
-/** Width shared by the search box and the drawer below it. */
-const BOX_WIDTH = 'w-[360px] max-w-[calc(100vw-2rem)] sm:w-[400px]';
+/**
+ * Search box width. On phones it leaves room for the Settings button that
+ * floats at the top-right; from `sm` up that button sits beside the account
+ * pill and the box can take its full width.
+ */
+const SEARCH_WIDTH = 'w-[360px] max-w-[calc(100vw-5.25rem)] sm:w-[400px] sm:max-w-[calc(100vw-2rem)]';
 
 const PLAN_MENU_WIDTH = 300;
 /** Minimum gap (px) between the HMO & Plan panel and the viewport edge. */
@@ -93,11 +101,15 @@ function anchorBelow(chip: HTMLElement, wrapper: HTMLElement): Anchor {
   };
 }
 
+const ICON_BUTTON =
+  'flex h-9 w-9 shrink-0 items-center justify-center rounded-md transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500';
+
 export default function FilterBar({
   filters,
   onFilterChange,
   hmos,
-  patientProfile = null,
+  myPlan = null,
+  onMyPlanClick,
   onSearchSubmit,
   drawerOpen = true,
   onToggleDrawer,
@@ -129,24 +141,10 @@ export default function FilterBar({
   const only24Hours = filters.only24Hours === true;
   const onlyEmergency = filters.onlyEmergency === true;
 
-  // "My HMO Plan" quick toggle, only for patients who saved coverage.
-  const savedHmoId = patientProfile?.has_hmo ? (patientProfile.hmo_id ?? null) : null;
-  const savedTier = patientProfile?.has_hmo ? (patientProfile.hmo_plan_tier ?? null) : null;
-  const canUseMyPlan = savedHmoId !== null;
-  const savedHmoName = savedHmoId
-    ? (hmos.find((hmo) => hmo.id === savedHmoId)?.name ?? 'My HMO')
-    : null;
   const myPlanActive =
-    canUseMyPlan && (filters.hmoId ?? null) === savedHmoId && (filters.planTier ?? null) === savedTier;
-
-  function toggleMyPlan() {
-    if (!canUseMyPlan) return;
-    if (myPlanActive) {
-      update({ hmoId: null, planTier: null });
-    } else {
-      update({ hmoId: savedHmoId, planTier: savedTier });
-    }
-  }
+    myPlan !== null &&
+    (filters.hmoId ?? null) === myPlan.hmoId &&
+    (filters.planTier ?? null) === myPlan.planTier;
 
   const selectedHmoName = hmoId ? (hmos.find((hmo) => hmo.id === hmoId)?.name ?? 'HMO') : null;
   const planChipActive = hmoId !== '' || planTier !== '';
@@ -247,7 +245,7 @@ export default function FilterBar({
       <form
         role="search"
         onSubmit={handleSubmit}
-        className={`pointer-events-auto flex h-12 items-center gap-1 rounded-2xl bg-white px-1.5 text-slate-900 shadow-lg ring-1 ring-slate-900/5 ${BOX_WIDTH}`}
+        className={`pointer-events-auto flex h-12 items-center gap-1 rounded-lg bg-white px-1.5 text-slate-900 shadow-lg ring-1 ring-slate-900/5 dark:bg-slate-900 dark:text-slate-100 dark:ring-white/10 ${SEARCH_WIDTH}`}
       >
         <button
           type="button"
@@ -255,7 +253,7 @@ export default function FilterBar({
           aria-expanded={drawerOpen}
           aria-controls={drawerId}
           title={drawerOpen ? 'Hide panel' : 'Show panel'}
-          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-slate-600 transition-colors hover:bg-slate-100 hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+          className={`${ICON_BUTTON} text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-slate-100`}
         >
           {drawerOpen ? (
             <PanelLeftClose className="h-5 w-5" aria-hidden="true" />
@@ -276,7 +274,7 @@ export default function FilterBar({
           placeholder="Search hospitals, specialties (e.g. Pediatrics), areas..."
           autoComplete="off"
           enterKeyHint="search"
-          className="h-full min-w-0 flex-1 bg-transparent px-1 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none [&::-webkit-search-cancel-button]:hidden"
+          className="h-full min-w-0 flex-1 bg-transparent px-1 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none dark:text-slate-100 dark:placeholder:text-slate-500 [&::-webkit-search-cancel-button]:hidden"
         />
 
         {searchQuery ? (
@@ -284,7 +282,7 @@ export default function FilterBar({
             type="button"
             onClick={() => update({ searchQuery: '' })}
             title="Clear search"
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+            className={`${ICON_BUTTON} text-slate-500 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100`}
           >
             <X className="h-4 w-4" aria-hidden="true" />
             <span className="sr-only">Clear search</span>
@@ -293,7 +291,7 @@ export default function FilterBar({
           <button
             type="submit"
             title="Search"
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-emerald-700 transition-colors hover:bg-emerald-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+            className={`${ICON_BUTTON} text-emerald-700 hover:bg-emerald-50 dark:text-emerald-400 dark:hover:bg-emerald-500/10`}
           >
             <Search className="h-5 w-5" aria-hidden="true" />
             <span className="sr-only">Search</span>
@@ -328,33 +326,20 @@ export default function FilterBar({
             );
           })}
 
-          {canUseMyPlan ? (
-            <Chip
-              active={myPlanActive}
-              onClick={toggleMyPlan}
-              icon={<ShieldCheck className="h-4 w-4" aria-hidden="true" />}
-              title={
-                myPlanActive
+          <Chip
+            active={myPlanActive}
+            onClick={() => onMyPlanClick?.()}
+            icon={<ShieldCheck className="h-4 w-4" aria-hidden="true" />}
+            title={
+              myPlan
+                ? myPlanActive
                   ? 'Stop filtering by your saved HMO plan'
-                  : `Only show facilities that accept ${savedHmoName}${savedTier ? ` ${savedTier}` : ''}`
-              }
-            >
-              My HMO Plan
-            </Chip>
-          ) : (
-            <Link
-              href={patientProfile ? '/onboarding' : '/login'}
-              title={
-                patientProfile
-                  ? 'Save your HMO plan to filter by it'
-                  : 'Sign in and save your HMO plan to filter by it'
-              }
-              className={`${CHIP_BASE} bg-white text-slate-700 hover:bg-slate-50`}
-            >
-              <ShieldCheck className="h-4 w-4" aria-hidden="true" />
-              My HMO Plan
-            </Link>
-          )}
+                  : `Only show facilities that accept ${myPlan.label}`
+                : 'Set your HMO plan to filter by it'
+            }
+          >
+            My HMO Plan
+          </Chip>
 
           <Chip
             ref={planChipRef}
@@ -395,7 +380,7 @@ export default function FilterBar({
             role="dialog"
             aria-label="Filter by HMO and plan"
             style={{ left: planMenu.left, top: planMenu.top }}
-            className="pointer-events-auto absolute z-30 w-[300px] max-w-[calc(100vw-2rem)] space-y-3 rounded-2xl bg-white p-3 text-slate-900 shadow-xl ring-1 ring-slate-900/5"
+            className="pointer-events-auto absolute z-30 w-[300px] max-w-[calc(100vw-2rem)] space-y-3 rounded-lg bg-white p-3 text-slate-900 shadow-xl ring-1 ring-slate-900/5 dark:bg-slate-900 dark:text-slate-100 dark:ring-white/10"
           >
             <SelectControl
               id="filter-hmo"
@@ -434,14 +419,14 @@ export default function FilterBar({
                 type="button"
                 onClick={() => update({ hmoId: null, planTier: null })}
                 disabled={!planChipActive}
-                className="rounded-lg px-2 py-1 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-100 hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 disabled:opacity-50"
+                className="rounded-md px-2 py-1 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-100 hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 disabled:opacity-50 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-slate-100"
               >
                 Clear
               </button>
               <button
                 type="button"
                 onClick={() => setPlanMenu(null)}
-                className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-emerald-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2"
+                className="inline-flex items-center gap-1 rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-emerald-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 dark:hover:bg-emerald-500 dark:focus-visible:ring-offset-slate-900"
               >
                 <Check className="h-3.5 w-3.5" aria-hidden="true" />
                 Done
@@ -460,7 +445,7 @@ export default function FilterBar({
 
 /** `shrink-0 whitespace-nowrap`: a chip is never squeezed or broken across lines. */
 const CHIP_BASE =
-  'pointer-events-auto inline-flex h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full px-3.5 text-sm font-medium shadow-md ring-1 ring-slate-900/5 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-1';
+  'pointer-events-auto inline-flex h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-3.5 text-sm font-medium shadow-md ring-1 ring-slate-900/5 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-1 dark:ring-white/10 dark:focus-visible:ring-offset-slate-950';
 
 function Chip({
   ref,
@@ -493,8 +478,8 @@ function Chip({
       {...aria}
       className={`${CHIP_BASE} ${
         active
-          ? 'bg-emerald-600 text-white hover:bg-emerald-700'
-          : 'bg-white text-slate-700 hover:bg-slate-50'
+          ? 'bg-emerald-600 text-white hover:bg-emerald-700 dark:hover:bg-emerald-500'
+          : 'bg-white text-slate-700 hover:bg-slate-50 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800'
       }`}
     >
       {icon}
@@ -519,7 +504,7 @@ function SelectControl({
 }) {
   return (
     <div>
-      <label htmlFor={id} className="mb-1 block text-xs font-medium text-slate-500">
+      <label htmlFor={id} className="mb-1 block text-xs font-medium text-slate-500 dark:text-slate-400">
         {label}
       </label>
       <div className="relative">
@@ -527,12 +512,12 @@ function SelectControl({
           id={id}
           value={value}
           onChange={(event) => onChange(event.target.value)}
-          className="block w-full appearance-none rounded-xl border border-slate-300 bg-white py-2 pl-3 pr-9 text-sm text-slate-900 shadow-sm transition-colors focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
+          className="block w-full appearance-none rounded-md border border-slate-300 bg-white py-2 pl-3 pr-9 text-sm text-slate-900 shadow-sm transition-colors focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
         >
           {children}
         </select>
         <ChevronDown
-          className="pointer-events-none absolute inset-y-0 right-3 my-auto h-4 w-4 text-slate-400"
+          className="pointer-events-none absolute inset-y-0 right-3 my-auto h-4 w-4 text-slate-400 dark:text-slate-500"
           aria-hidden="true"
         />
       </div>
