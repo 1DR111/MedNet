@@ -54,6 +54,7 @@ export default async function Home() {
       initialFacilities={facilities}
       hmos={hmosResult.data ?? []}
       patientProfile={patientProfile}
+      initialSignedIn={user !== null}
     />
   );
 }

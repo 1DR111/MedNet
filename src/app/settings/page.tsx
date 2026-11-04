@@ -30,6 +30,7 @@ import { useTheme } from '@/components/ThemeProvider';
 import { CITIES, DEFAULT_CITY, isKnownCity } from '@/lib/cities';
 import { clearSavedCoverage, readSavedCoverage, writeSavedCoverage } from '@/lib/coverage';
 import { PLAN_TIER_GROUPS, isPatientPlanTier, type PatientPlanTier } from '@/lib/plans';
+import { dismissSplash } from '@/lib/splash';
 import { createClient } from '@/lib/supabase/client';
 import type { Theme } from '@/lib/theme';
 import type { Hmo, PatientProfile } from '@/types/database';
@@ -285,8 +286,10 @@ export default function SettingsPage() {
       setAccountError(`Could not sign out: ${error.message}`);
       return;
     }
-    // The on-device mirror belongs to the account that just left.
+    // The on-device mirror belongs to the account that just left. Signing out
+    // lands on the map, not on the first-visit welcome screen.
     clearSavedCoverage();
+    dismissSplash();
     router.push('/');
     router.refresh();
   }

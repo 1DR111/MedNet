@@ -13,6 +13,7 @@ import {
   CheckCircle2,
   ChevronDown,
   Clock,
+  ExternalLink,
   Globe,
   Info,
   Loader2,
@@ -34,6 +35,7 @@ import {
   Wallet,
   X,
 } from 'lucide-react';
+import DirectionsPanel from '@/components/DirectionsPanel';
 import {
   HmoCompatibility,
   SpecialtyPills,
@@ -42,13 +44,22 @@ import {
 } from '@/components/FacilityCard';
 import type { FocusPadding } from '@/components/FacilityMap';
 import FilterBar, { EMPTY_FILTERS } from '@/components/FilterBar';
+import WelcomeSplash from '@/components/WelcomeSplash';
 import { clearSavedCoverage, useSavedCoverage, type SavedCoverage } from '@/lib/coverage';
+import {
+  ABUJA_PRESETS,
+  googleMapsDirectionsUrl,
+  originCoords,
+  originLabel,
+  useDirections,
+} from '@/lib/directions';
 import {
   filterFacilities,
   findHmoMatch,
   type FacilityFilters,
   type FacilityWithHMO,
 } from '@/lib/facilities';
+import { haversineKm, type LatLng } from '@/lib/geolocation';
 import {
   clearRecents,
   forgetFacility,
@@ -58,6 +69,7 @@ import {
   useRecentSearches,
   type RecentFacility,
 } from '@/lib/recents';
+import { dismissSplash, useSplashDismissed } from '@/lib/splash';
 import { createClient } from '@/lib/supabase/client';
 import type { Facility, Hmo, PatientProfile } from '@/types/database';
 
@@ -116,7 +128,7 @@ type Notice = {
   sticky?: boolean;
 } | null;
 
-type DrawerMode = 'details' | 'idle' | 'results';
+type DrawerMode = 'directions' | 'details' | 'idle' | 'results';
 
 /** What the client knows about the session, checked on mount. */
 type AuthState = 'unknown' | 'guest' | 'signed-in';
@@ -200,12 +212,15 @@ export interface DiscoveryDashboardProps {
   initialFacilities: FacilityWithHMO[];
   hmos: Hmo[];
   patientProfile: PatientProfile | null;
+  /** Whether the server saw a signed-in user; signed-in patients never meet the welcome screen. */
+  initialSignedIn: boolean;
 }
 
 export default function DiscoveryDashboard({
   initialFacilities,
   hmos,
   patientProfile,
+  initialSignedIn,
 }: DiscoveryDashboardProps) {
   const router = useRouter();
 
@@ -222,9 +237,11 @@ export default function DiscoveryDashboard({
   const [authState, setAuthState] = useState<AuthState>('unknown');
   const [clientProfile, setClientProfile] = useState<PatientProfile | null>(null);
   const localCoverage = useSavedCoverage();
+  const splashDismissed = useSplashDismissed();
 
   const recentFacilities = useRecentFacilities();
   const recentSearches = useRecentSearches();
+  const directions = useDirections();
 
   const mapRef = useRef<LeafletMap | null>(null);
   /** The top-left stack: search box, chips and drawer. */
@@ -235,13 +252,28 @@ export default function DiscoveryDashboard({
 
   const profile = clientProfile ?? patientProfile;
   const isSignedIn = profile !== null || authState === 'signed-in';
+  // First visit as a guest: the welcome screen stands in for the map until an
+  // action is chosen (remembered for this tab session) or a session is found.
+  const showSplash = !initialSignedIn && !isSignedIn && !splashDismissed;
   const savedCoverage = useMemo(
     () => resolveCoverage(profile, localCoverage),
     [profile, localCoverage],
   );
   const baselineFilters = useMemo(() => filtersFor(savedCoverage), [savedCoverage]);
 
-  const facilities = initialFacilities;
+  // Once the device position is known (from a directions request), annotate
+  // with distance and sort nearest-first.
+  const userLocation = directions.gps.coords;
+  const facilities = useMemo(() => {
+    if (!userLocation) return initialFacilities;
+    return initialFacilities
+      .map((facility) => ({
+        ...facility,
+        distance_km: haversineKm(userLocation, [facility.latitude, facility.longitude]),
+      }))
+      .sort((a, b) => (a.distance_km ?? 0) - (b.distance_km ?? 0));
+  }, [initialFacilities, userLocation]);
+
   const visibleFacilities = useMemo(() => filterFacilities(facilities, filters), [facilities, filters]);
 
   const selectedFacility = selectedFacilityId
@@ -262,7 +294,14 @@ export default function DiscoveryDashboard({
   // just the patient's saved plan applied by default.
   const isIdle =
     !hasQuery && (filtersEqual(filters, baselineFilters) || filtersEqual(filters, EMPTY_FILTERS));
-  const drawerMode: DrawerMode = selectedFacility ? 'details' : isIdle ? 'idle' : 'results';
+  const directionsActive = directions.target !== null;
+  const drawerMode: DrawerMode = directionsActive
+    ? 'directions'
+    : selectedFacility
+      ? 'details'
+      : isIdle
+        ? 'idle'
+        : 'results';
 
   const profileHmo = profile?.hmo_id
     ? (hmos.find((hmo) => hmo.id === profile.hmo_id) ?? null)
@@ -271,6 +310,20 @@ export default function DiscoveryDashboard({
   const savedHmoName = savedCoverage
     ? (hmos.find((hmo) => hmo.id === savedCoverage.hmoId)?.name ?? 'your HMO')
     : null;
+
+  // Map overlays for directions: a chosen starting point (other than the
+  // device position, which has its own marker) and the route line.
+  const originLocation = useMemo(() => {
+    const origin = directions.origin;
+    if (!origin || origin.kind === 'gps') return null;
+    return { position: originCoords(origin), label: originLabel(origin) };
+  }, [directions.origin]);
+  const activeRouteCoordinates = directions.route.result?.coordinates ?? null;
+  // Starting point for the Google Maps hand-off: the chosen origin, else the
+  // device position when known.
+  const handoffOrigin: LatLng | null = directions.origin
+    ? originCoords(directions.origin)
+    : userLocation;
 
   /**
    * Measures the floating UI when the map is about to fly, so the target
@@ -345,6 +398,13 @@ export default function DiscoveryDashboard({
     };
   }, [patientProfile]);
 
+  // Fetch the map bundle while the welcome screen is up, so "Browse Map as
+  // Guest" reveals the map without a loading pause.
+  useEffect(() => {
+    if (!showSplash) return;
+    void import('@/components/FacilityMap');
+  }, [showSplash]);
+
   // Start each drawer view at the top.
   useEffect(() => {
     drawerRef.current?.scrollTo({ top: 0 });
@@ -359,11 +419,29 @@ export default function DiscoveryDashboard({
 
   /* ------------------------------ Interactions ----------------------------- */
 
-  const selectFacility = useCallback((facility: Pick<Facility, 'id' | 'name' | 'type' | 'address'>) => {
-    setSelectedFacilityId(facility.id);
-    setDrawerOpen(true);
-    rememberFacility(toRecent(facility));
-  }, []);
+  const { start: startDirectionsTo } = directions;
+
+  const selectFacility = useCallback(
+    (facility: Facility) => {
+      setSelectedFacilityId(facility.id);
+      setDrawerOpen(true);
+      rememberFacility(toRecent(facility));
+      // While directions are open, choosing another facility retargets them.
+      if (directionsActive) startDirectionsTo(facility);
+    },
+    [directionsActive, startDirectionsTo],
+  );
+
+  /** In-app directions: selects the facility and opens the Directions view. */
+  const startDirections = useCallback(
+    (facility: Facility) => {
+      setSelectedFacilityId(facility.id);
+      setDrawerOpen(true);
+      rememberFacility(toRecent(facility));
+      startDirectionsTo(facility);
+    },
+    [startDirectionsTo],
+  );
 
   function openRecentFacility(recent: RecentFacility) {
     const facility = facilities.find((candidate) => candidate.id === recent.id);
@@ -379,6 +457,7 @@ export default function DiscoveryDashboard({
     setFilters(next);
     // Changing a filter returns to the list, like Google Maps.
     setSelectedFacilityId(null);
+    if (directionsActive) directions.close();
   }
 
   /**
@@ -406,6 +485,7 @@ export default function DiscoveryDashboard({
     if (query) rememberSearch(query);
     setSelectedFacilityId(null);
     setDrawerOpen(true);
+    if (directionsActive) directions.close();
   }
 
   function applyRecentSearch(query: string) {
@@ -427,8 +507,10 @@ export default function DiscoveryDashboard({
       return;
     }
     // Drop everything that belonged to the account: filters, the client copy
-    // of the profile and the on-device plan mirror.
+    // of the profile and the on-device plan mirror. Signing out lands on the
+    // map, not on the first-visit welcome screen.
     clearSavedCoverage();
+    dismissSplash();
     setClientProfile(null);
     setAuthState('guest');
     setFilters({ ...EMPTY_FILTERS });
@@ -438,6 +520,10 @@ export default function DiscoveryDashboard({
   }
 
   /* --------------------------------- Render -------------------------------- */
+
+  if (showSplash) {
+    return <WelcomeSplash onBrowseAsGuest={dismissSplash} />;
+  }
 
   const accountMenu = (variant: 'pill' | 'compact') => (
     <AccountMenu
@@ -457,6 +543,11 @@ export default function DiscoveryDashboard({
           facilities={mapFacilities}
           selectedFacilityId={selectedFacilityId}
           onSelectFacility={selectFacility}
+          holdSelectionFlight={directionsActive}
+          userLocation={userLocation}
+          originLocation={originLocation}
+          activeRouteCoordinates={activeRouteCoordinates}
+          onMapClick={directionsActive ? directions.usePin : undefined}
           getFocusPadding={getFocusPadding}
           mapRef={mapRef}
           className="h-full w-full"
@@ -499,20 +590,37 @@ export default function DiscoveryDashboard({
           id={DRAWER_ID}
           hidden={!drawerOpen}
           aria-label={
-            drawerMode === 'details'
-              ? 'Facility details'
-              : drawerMode === 'results'
-                ? 'Search results'
-                : 'Recent and nearby facilities'
+            drawerMode === 'directions'
+              ? 'Directions'
+              : drawerMode === 'details'
+                ? 'Facility details'
+                : drawerMode === 'results'
+                  ? 'Search results'
+                  : 'Recent and nearby facilities'
           }
           className={`pointer-events-auto max-h-[min(40vh,20rem)] overflow-y-auto rounded-lg bg-white/95 text-slate-900 shadow-xl ring-1 ring-slate-900/5 backdrop-blur dark:bg-slate-900/95 dark:text-slate-100 dark:ring-white/10 sm:max-h-[calc(100vh-140px)] ${BOX_WIDTH}`}
         >
-          {drawerMode === 'details' && selectedFacility ? (
+          {drawerMode === 'directions' && directions.target ? (
+            <DirectionsPanel
+              facility={directions.target}
+              origin={directions.origin}
+              gps={directions.gps}
+              route={directions.route}
+              presets={ABUJA_PRESETS}
+              onClose={directions.close}
+              onUseGps={directions.useGps}
+              onRetryGps={directions.retryGps}
+              onUsePreset={directions.usePreset}
+              onUseAddress={directions.useAddress}
+            />
+          ) : drawerMode === 'details' && selectedFacility ? (
             <PlaceDetails
               facility={selectedFacility}
               activeHmoId={filters.hmoId}
               activePlanTier={filters.planTier}
               onBack={() => setSelectedFacilityId(null)}
+              onStartDirections={startDirections}
+              handoffOrigin={handoffOrigin}
             />
           ) : drawerMode === 'idle' ? (
             <>
@@ -530,7 +638,9 @@ export default function DiscoveryDashboard({
                   subtitle={
                     activeHmo
                       ? `Matching your ${activeHmo.name}${filters.planTier ? ` ${filters.planTier}` : ''} plan`
-                      : 'All verified facilities, A to Z'
+                      : userLocation
+                        ? 'Sorted by distance from you'
+                        : 'All verified facilities, A to Z'
                   }
                 />
                 <FacilityList
@@ -538,6 +648,7 @@ export default function DiscoveryDashboard({
                   filters={filters}
                   selectedFacilityId={selectedFacilityId}
                   onSelect={selectFacility}
+                  onStartDirections={startDirections}
                   onReset={resetFilters}
                 />
               </div>
@@ -567,6 +678,7 @@ export default function DiscoveryDashboard({
                 filters={filters}
                 selectedFacilityId={selectedFacilityId}
                 onSelect={selectFacility}
+                onStartDirections={startDirections}
                 onReset={resetFilters}
               />
             </div>
@@ -767,12 +879,14 @@ function FacilityList({
   filters,
   selectedFacilityId,
   onSelect,
+  onStartDirections,
   onReset,
 }: {
   facilities: FacilityWithHMO[];
   filters: FacilityFilters;
   selectedFacilityId: string | null;
   onSelect: (facility: FacilityWithHMO) => void;
+  onStartDirections: (facility: FacilityWithHMO) => void;
   onReset: () => void;
 }) {
   if (facilities.length === 0) {
@@ -810,6 +924,7 @@ function FacilityList({
             activePlanTier={filters.planTier}
             selected={facility.id === selectedFacilityId}
             onSelect={onSelect}
+            onStartDirections={onStartDirections}
           />
         </li>
       ))}
@@ -823,19 +938,20 @@ function FacilityRow({
   activePlanTier,
   selected,
   onSelect,
+  onStartDirections,
 }: {
   facility: FacilityWithHMO;
   activeHmoId?: string | null;
   activePlanTier?: string | null;
   selected: boolean;
   onSelect: (facility: FacilityWithHMO) => void;
+  onStartDirections: (facility: FacilityWithHMO) => void;
 }) {
   const meta = TYPE_META[facility.type];
   const Icon = meta.icon;
   const hasActiveCoverage = Boolean(activeHmoId?.trim() || activePlanTier?.trim());
   const match = hasActiveCoverage ? findHmoMatch(facility, activeHmoId, activePlanTier) : null;
   const listedHmos = facility.facility_hmos.filter((row) => row.hmos).length;
-  const directionsUrl = `https://www.google.com/maps/dir/?api=1&destination=${facility.latitude},${facility.longitude}`;
 
   return (
     <div
@@ -902,17 +1018,18 @@ function FacilityRow({
         </p>
       </div>
 
-      <a
-        href={directionsUrl}
-        target="_blank"
-        rel="noopener noreferrer"
-        onClick={(event) => event.stopPropagation()}
+      <button
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation();
+          onStartDirections(facility);
+        }}
         title="Get directions"
         className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-emerald-700 ring-1 ring-inset ring-emerald-200 transition-colors hover:bg-emerald-600 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 dark:text-emerald-300 dark:ring-emerald-800 dark:hover:bg-emerald-600 dark:hover:text-white"
       >
         <Navigation className="h-4 w-4" aria-hidden="true" />
-        <span className="sr-only">Get directions to {facility.name} (opens in a new tab)</span>
-      </a>
+        <span className="sr-only">Get directions to {facility.name}</span>
+      </button>
     </div>
   );
 }
@@ -953,17 +1070,22 @@ function PlaceDetails({
   activeHmoId,
   activePlanTier,
   onBack,
+  onStartDirections,
+  handoffOrigin,
 }: {
   facility: FacilityWithHMO;
   activeHmoId?: string | null;
   activePlanTier?: string | null;
   onBack: () => void;
+  onStartDirections: (facility: FacilityWithHMO) => void;
+  /** Starting point to pre-fill in the Google Maps hand-off, when known. */
+  handoffOrigin: LatLng | null;
 }) {
   const meta = TYPE_META[facility.type];
+  const googleMapsUrl = googleMapsDirectionsUrl([facility.latitude, facility.longitude], handoffOrigin);
   const Icon = meta.icon;
   const hasActiveCoverage = Boolean(activeHmoId?.trim() || activePlanTier?.trim());
   const match = hasActiveCoverage ? findHmoMatch(facility, activeHmoId, activePlanTier) : null;
-  const directionsUrl = `https://www.google.com/maps/dir/?api=1&destination=${facility.latitude},${facility.longitude}`;
   const phoneHref = facility.phone ? `tel:${facility.phone.replace(/[^\d+]/g, '')}` : null;
   const website = facility.website?.trim() || null;
   const email = facility.email?.trim() || null;
@@ -1016,16 +1138,15 @@ function PlaceDetails({
 
         {/* Actions */}
         <div className="flex flex-wrap gap-2">
-          <a
-            href={directionsUrl}
-            target="_blank"
-            rel="noopener noreferrer"
+          <button
+            type="button"
+            onClick={() => onStartDirections(facility)}
             className="inline-flex flex-1 items-center justify-center gap-2 rounded-md bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white shadow-md shadow-emerald-600/25 transition-colors hover:bg-emerald-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 dark:hover:bg-emerald-500 dark:focus-visible:ring-offset-slate-900"
           >
             <Navigation className="h-4 w-4" aria-hidden="true" />
-            Directions
-            <span className="sr-only"> to {facility.name} (opens in a new tab)</span>
-          </a>
+            Get Directions
+            <span className="sr-only"> to {facility.name}</span>
+          </button>
           {phoneHref && (
             <a href={phoneHref} className={SECONDARY_ACTION}>
               <Phone className="h-4 w-4" aria-hidden="true" />
@@ -1041,6 +1162,18 @@ function PlaceDetails({
             </a>
           )}
         </div>
+
+        {/* Hand-off: the facility (and any chosen start) pre-filled in Google Maps */}
+        <a
+          href={googleMapsUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className={`${SECONDARY_ACTION} -mt-2 w-full`}
+        >
+          <ExternalLink className="h-4 w-4" aria-hidden="true" />
+          Open in Google Maps
+          <span className="sr-only"> for {facility.name} (opens in a new tab)</span>
+        </a>
 
         {/* Leadway Health plan compatibility */}
         <section aria-label="HMO plan compatibility">

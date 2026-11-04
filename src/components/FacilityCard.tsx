@@ -28,6 +28,8 @@ export interface FacilityCardProps {
   isSelected?: boolean;
   /** Called when the card is activated; the map step will use this to pan. */
   onSelect?: (facility: FacilityWithHMO) => void;
+  /** Opens in-app directions to this facility. The button is hidden without it. */
+  onStartDirections?: (facility: FacilityWithHMO) => void;
   className?: string;
 }
 
@@ -61,6 +63,7 @@ export default function FacilityCard({
   activePlanTier = null,
   isSelected = false,
   onSelect,
+  onStartDirections,
   className = '',
 }: FacilityCardProps) {
   const typeMeta = TYPE_META[facility.type];
@@ -69,7 +72,6 @@ export default function FacilityCard({
   const hasActiveCoverage = Boolean(activeHmoId?.trim() || activePlanTier?.trim());
   const match = hasActiveCoverage ? findHmoMatch(facility, activeHmoId, activePlanTier) : null;
 
-  const directionsUrl = `https://www.google.com/maps/dir/?api=1&destination=${facility.latitude},${facility.longitude}`;
   const phoneHref = facility.phone ? `tel:${facility.phone.replace(/[^\d+]/g, '')}` : null;
 
   function handleSelect() {
@@ -171,17 +173,20 @@ export default function FacilityCard({
 
       {/* Actions */}
       <footer className="mt-auto flex flex-wrap gap-2 pt-1">
-        <a
-          href={directionsUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          onClick={stopSelect}
-          className="inline-flex flex-1 items-center justify-center gap-2 rounded-md bg-emerald-600 px-3 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-emerald-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 dark:hover:bg-emerald-500 dark:focus-visible:ring-offset-slate-900"
-        >
-          <Navigation className="h-4 w-4" aria-hidden="true" />
-          Get Directions
-          <span className="sr-only"> to {facility.name} (opens in a new tab)</span>
-        </a>
+        {onStartDirections && (
+          <button
+            type="button"
+            onClick={(event) => {
+              stopSelect(event);
+              onStartDirections(facility);
+            }}
+            className="inline-flex flex-1 items-center justify-center gap-2 rounded-md bg-emerald-600 px-3 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-emerald-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 dark:hover:bg-emerald-500 dark:focus-visible:ring-offset-slate-900"
+          >
+            <Navigation className="h-4 w-4" aria-hidden="true" />
+            Get Directions
+            <span className="sr-only"> to {facility.name}</span>
+          </button>
+        )}
         {phoneHref && (
           <a
             href={phoneHref}

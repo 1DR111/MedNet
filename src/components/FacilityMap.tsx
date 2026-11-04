@@ -19,11 +19,24 @@
  * API key. Dark mode is handled in `globals.css`: the tile pane is
  * re-coloured with a CSS filter under `.dark`, and the marker, tooltip and
  * attribution colours below adapt with the same class.
+ *
+ * Directions: pass `activeRouteCoordinates` to draw the road route and fit it
+ * into view, `originLocation` for a chosen starting point, `userLocation` for
+ * the device position, and `onMapClick` while the user may drop a starting pin.
  */
 
 import { useCallback, useEffect, useMemo, useRef, type RefObject } from 'react';
-import L, { type Map as LeafletMap } from 'leaflet';
-import { AttributionControl, MapContainer, Marker, TileLayer, Tooltip, useMap } from 'react-leaflet';
+import L, { type LeafletMouseEvent, type Map as LeafletMap } from 'leaflet';
+import {
+  AttributionControl,
+  MapContainer,
+  Marker,
+  Polyline,
+  TileLayer,
+  Tooltip,
+  useMap,
+  useMapEvents,
+} from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import type { Facility, FacilityType } from '@/types/database';
 
@@ -38,14 +51,29 @@ export const DEFAULT_ZOOM = 12;
 const SELECTED_ZOOM = 15;
 /** Zoom used when centring on the user's location, unless already closer. */
 const USER_ZOOM = 14;
+/** Closest the map zooms when fitting a whole route into view. */
+const ROUTE_MAX_ZOOM = 16;
+/** Extra breathing room (px) around a fitted route, beyond the floating UI. */
+const ROUTE_PADDING = 24;
 /** Smallest free width/height (px) kept for a flight target after padding. */
 const MIN_FREE_AREA = 80;
+/**
+ * How far the pin tip extends below its square icon box, as a fraction of
+ * the box size: the square is rotated 45 degrees, so its sharp corner sits
+ * (sqrt(2) - 1) / 2 of the size past the bottom edge.
+ */
+const PIN_TIP_OVERHANG = (Math.SQRT2 - 1) / 2;
 
 /** Standard OpenStreetMap raster tiles: free, no key, 19 zoom levels. */
 const TILE_URL = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
 const TILE_ATTRIBUTION =
   '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors';
 const TILE_MAX_ZOOM = 19;
+
+/** Route line: clinical teal, drawn over a theme-aware casing for contrast. */
+const ROUTE_COLOR = '#0d9488';
+const ROUTE_WEIGHT = 5;
+const ROUTE_OPACITY = 0.9;
 
 /**
  * Screen areas, in pixels, covered by floating UI. Flights place their target
@@ -99,14 +127,16 @@ function getFacilityIcon(type: FacilityType, selected: boolean): L.DivIcon {
   if (cached) return cached;
 
   const size = selected ? 40 : 30;
+  const tip = Math.round(size * (1 + PIN_TIP_OVERHANG));
   const color = MARKER_COLORS[type];
   const icon = L.divIcon({
     className: 'mednet-marker',
     html: `<span class="mednet-pin${selected ? ' mednet-pin--selected' : ''}" style="--pin-color:${color};width:${size}px;height:${size}px;"><span class="mednet-pin__glyph">${MARKER_GLYPHS[type]}</span></span>`,
     iconSize: [size, size],
-    // The pin tip (bottom centre after rotation) is the anchor point.
-    iconAnchor: [size / 2, size],
-    tooltipAnchor: [0, -size],
+    // The pin tip (bottom centre after rotation) sits on the coordinate; the
+    // tooltip opens above the round head.
+    iconAnchor: [size / 2, tip],
+    tooltipAnchor: [0, -tip],
   });
 
   iconCache.set(key, icon);
@@ -127,10 +157,25 @@ function getUserIcon(): L.DivIcon {
   return icon;
 }
 
+/** Teal disc for a chosen starting point (landmark preset or dropped pin). */
+function getOriginIcon(): L.DivIcon {
+  const cached = iconCache.get('origin');
+  if (cached) return cached;
+  const icon = L.divIcon({
+    className: 'mednet-marker',
+    html: '<span class="mednet-origin"></span>',
+    iconSize: [22, 22],
+    iconAnchor: [11, 11],
+    tooltipAnchor: [0, -12],
+  });
+  iconCache.set('origin', icon);
+  return icon;
+}
+
 /**
- * Styles for the div icons, tooltips and attribution in both themes. Scoped by
- * class so they never leak out of the map. The `.dark` rules key off the class
- * the theme engine keeps on `<html>`.
+ * Styles for the div icons, tooltips, route casing and attribution in both
+ * themes. Scoped by class so they never leak out of the map. The `.dark`
+ * rules key off the class the theme engine keeps on `<html>`.
  */
 const MARKER_CSS = `
 .mednet-marker { background: transparent; border: 0; }
@@ -158,10 +203,15 @@ const MARKER_CSS = `
   align-items: center;
   justify-content: center;
   transform: rotate(45deg);
-  color: #fff;
-  font: 700 0.42em/1 system-ui, -apple-system, 'Segoe UI', sans-serif;
-  font-size: 46%;
+  color: #ffffff;
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 1;
+  text-shadow: 0 1px 1px rgba(15, 23, 42, 0.3);
+  user-select: none;
 }
+.mednet-pin--selected .mednet-pin__glyph { font-size: 15px; }
 .mednet-user { position: relative; display: block; width: 24px; height: 24px; }
 .mednet-user__dot {
   position: absolute; inset: 5px; border-radius: 9999px;
@@ -173,6 +223,17 @@ const MARKER_CSS = `
   position: absolute; inset: 0; border-radius: 9999px;
   background: var(--user-color); opacity: 0.25;
 }
+.mednet-origin {
+  position: relative; display: block; width: 22px; height: 22px; border-radius: 9999px;
+  background: ${ROUTE_COLOR};
+  box-shadow: 0 0 0 3px #fff, 0 2px 6px rgba(15, 23, 42, 0.35);
+}
+.mednet-origin::after {
+  content: ''; position: absolute; inset: 7px; border-radius: 9999px; background: #fff;
+}
+.dark .mednet-origin { box-shadow: 0 0 0 3px #0f172a, 0 2px 6px rgba(0, 0, 0, 0.6); }
+.mednet-route-casing { stroke: #ffffff; }
+.dark .mednet-route-casing { stroke: #0f172a; }
 .leaflet-tooltip.mednet-tooltip {
   padding: 4px 10px;
   border: 0;
@@ -211,13 +272,27 @@ export interface FacilityMapProps {
   selectedFacilityId?: string | null;
   /** Called when a marker is clicked. */
   onSelectFacility?: (facility: Facility) => void;
-  /** The patient's `[latitude, longitude]`, shown as a blue dot when known. */
+  /**
+   * Skip the flight to the selected facility (for example while a route is
+   * being fetched, so the map does not fly twice).
+   */
+  holdSelectionFlight?: boolean;
+  /** The device position as `[latitude, longitude]`, shown as a blue dot when known. */
   userLocation?: [number, number] | null;
   /**
-   * Bump this to fly to `userLocation` again even when the coordinates have
-   * not changed (e.g. a second request to centre on the patient).
+   * Bump this to centre the map on `userLocation` (it never recentres on its
+   * own when the coordinates change).
    */
   userLocationRevision?: number;
+  /** A chosen starting point other than the device position. */
+  originLocation?: { position: [number, number]; label: string } | null;
+  /** Road route to draw and fit into view, as `[latitude, longitude]` pairs. */
+  activeRouteCoordinates?: [number, number][] | null;
+  /**
+   * When set, taps on empty map (not on a marker) report their coordinates
+   * and the cursor becomes a crosshair, so the user can drop a starting pin.
+   */
+  onMapClick?: (coords: [number, number]) => void;
   /**
    * Returns the floating UI footprint at the moment of a flight, so the
    * target lands in the uncovered part of the map. Measuring on demand keeps
@@ -238,16 +313,23 @@ export default function FacilityMap({
   facilities,
   selectedFacilityId = null,
   onSelectFacility,
+  holdSelectionFlight = false,
   userLocation = null,
   userLocationRevision = 0,
+  originLocation = null,
+  activeRouteCoordinates = null,
+  onMapClick,
   getFocusPadding,
   mapRef,
   center = ABUJA_CENTER,
   zoom = DEFAULT_ZOOM,
   className = 'h-full w-full',
 }: FacilityMapProps) {
+  const originIcon = useMemo(() => getOriginIcon(), []);
+  const hasRoute = activeRouteCoordinates !== null && activeRouteCoordinates.length >= 2;
+
   return (
-    <div className={`relative ${className}`}>
+    <div className={`relative ${className} ${onMapClick ? '[&_.leaflet-container]:cursor-crosshair' : ''}`}>
       <style>{MARKER_CSS}</style>
       <MapContainer
         ref={mapRef}
@@ -262,6 +344,33 @@ export default function FacilityMap({
         <TileLayer url={TILE_URL} attribution={TILE_ATTRIBUTION} maxZoom={TILE_MAX_ZOOM} />
         <AttributionControl position="bottomleft" prefix={false} />
 
+        {hasRoute && (
+          <>
+            <Polyline
+              positions={activeRouteCoordinates}
+              pathOptions={{
+                className: 'mednet-route-casing',
+                weight: ROUTE_WEIGHT + 4,
+                opacity: ROUTE_OPACITY,
+                lineCap: 'round',
+                lineJoin: 'round',
+                interactive: false,
+              }}
+            />
+            <Polyline
+              positions={activeRouteCoordinates}
+              pathOptions={{
+                color: ROUTE_COLOR,
+                weight: ROUTE_WEIGHT,
+                opacity: ROUTE_OPACITY,
+                lineCap: 'round',
+                lineJoin: 'round',
+                interactive: false,
+              }}
+            />
+          </>
+        )}
+
         {facilities.map((facility) => (
           <FacilityMarker
             key={facility.id}
@@ -271,11 +380,28 @@ export default function FacilityMap({
           />
         ))}
 
+        {originLocation && (
+          <Marker
+            position={originLocation.position}
+            icon={originIcon}
+            zIndexOffset={1500}
+            alt={originLocation.label}
+          >
+            <Tooltip direction="top" className="mednet-tooltip" opacity={1}>
+              {originLocation.label}
+            </Tooltip>
+          </Marker>
+        )}
+
+        {onMapClick && <MapClickHandler onMapClick={onMapClick} />}
+
         <MapController
           facilities={facilities}
           selectedFacilityId={selectedFacilityId}
+          holdSelectionFlight={holdSelectionFlight}
           userLocation={userLocation}
           userLocationRevision={userLocationRevision}
+          activeRouteCoordinates={hasRoute ? activeRouteCoordinates : null}
           getFocusPadding={getFocusPadding}
         />
       </MapContainer>
@@ -317,6 +443,18 @@ function FacilityMarker({
   );
 }
 
+/** Reports taps on empty map. Marker clicks do not bubble to the map, so pins stay selectable. */
+function MapClickHandler({ onMapClick }: { onMapClick: (coords: [number, number]) => void }) {
+  const handlers = useMemo(
+    () => ({
+      click: (event: LeafletMouseEvent) => onMapClick([event.latlng.lat, event.latlng.lng]),
+    }),
+    [onMapClick],
+  );
+  useMapEvents(handlers);
+  return null;
+}
+
 /* -------------------------------------------------------------------------- */
 /*                                 Controller                                 */
 /* -------------------------------------------------------------------------- */
@@ -339,22 +477,26 @@ function clampPadding(size: L.Point, padding: FocusPadding): FocusPadding {
 
 /**
  * Lives inside the map so it can use `useMap()`. Flies to the selected
- * facility, flies to the user when their location arrives (or is requested
- * again), and renders the user-location marker. Every flight asks
- * `getFocusPadding` for the floating UI footprint so the target lands in the
- * uncovered part of the map.
+ * facility, fits an active route into view, centres on the user on request,
+ * and renders the user-location marker. Every movement asks `getFocusPadding`
+ * for the floating UI footprint so the target lands in the uncovered part of
+ * the map.
  */
 function MapController({
   facilities,
   selectedFacilityId,
+  holdSelectionFlight,
   userLocation,
   userLocationRevision,
+  activeRouteCoordinates,
   getFocusPadding,
 }: {
   facilities: Facility[];
   selectedFacilityId: string | null;
+  holdSelectionFlight: boolean;
   userLocation: [number, number] | null;
   userLocationRevision: number;
+  activeRouteCoordinates: [number, number][] | null;
   getFocusPadding?: () => FocusPadding;
 }) {
   const map = useMap();
@@ -390,20 +532,41 @@ function MapController({
   const selectedLng = selected?.longitude;
 
   // Fly to the selected facility. Depends on the coordinates, not the array,
-  // so re-filtering the list does not re-trigger the animation.
+  // so re-filtering the list does not re-trigger the animation. Held while a
+  // route is active, and runs again when the hold lifts (directions closed).
   useEffect(() => {
+    if (holdSelectionFlight) return;
     if (!selectedFacilityId || selectedLat === undefined || selectedLng === undefined) return;
     flyWithPadding([selectedLat, selectedLng], SELECTED_ZOOM);
-  }, [flyWithPadding, selectedFacilityId, selectedLat, selectedLng]);
+  }, [flyWithPadding, holdSelectionFlight, selectedFacilityId, selectedLat, selectedLng]);
 
-  // Fly to the patient when their location arrives, and again on every
-  // `userLocationRevision` bump.
-  const userLat = userLocation?.[0];
-  const userLng = userLocation?.[1];
+  // Centre on the patient only when explicitly asked (a revision bump), not
+  // whenever their coordinates change.
+  const userLocationRef = useRef(userLocation);
   useEffect(() => {
-    if (userLat === undefined || userLng === undefined) return;
-    flyWithPadding([userLat, userLng], USER_ZOOM);
-  }, [flyWithPadding, userLat, userLng, userLocationRevision]);
+    userLocationRef.current = userLocation;
+  }, [userLocation]);
+  useEffect(() => {
+    if (!userLocationRevision) return;
+    const target = userLocationRef.current;
+    if (!target) return;
+    flyWithPadding(target, USER_ZOOM);
+  }, [flyWithPadding, userLocationRevision]);
+
+  // Fit the whole route into the uncovered part of the map.
+  useEffect(() => {
+    if (!activeRouteCoordinates) return;
+    const base = paddingRef.current?.() ?? NO_PADDING;
+    const { topLeft, bottomRight } = clampPadding(map.getSize(), {
+      topLeft: [base.topLeft[0] + ROUTE_PADDING, base.topLeft[1] + ROUTE_PADDING],
+      bottomRight: [base.bottomRight[0] + ROUTE_PADDING, base.bottomRight[1] + ROUTE_PADDING],
+    });
+    map.fitBounds(L.latLngBounds(activeRouteCoordinates), {
+      paddingTopLeft: topLeft,
+      paddingBottomRight: bottomRight,
+      maxZoom: ROUTE_MAX_ZOOM,
+    });
+  }, [map, activeRouteCoordinates]);
 
   const userIcon = useMemo(() => getUserIcon(), []);
 

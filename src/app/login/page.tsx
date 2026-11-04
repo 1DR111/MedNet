@@ -18,9 +18,15 @@ import {
   User,
 } from 'lucide-react';
 import type { SupabaseClient, User as AuthUser } from '@supabase/supabase-js';
+import { dismissSplash } from '@/lib/splash';
 import { createClient } from '@/lib/supabase/client';
 
 type AuthMode = 'signin' | 'signup';
+
+/** `?mode=signup` opens the Create Account tab; anything else opens Sign In. */
+function parseAuthMode(value: string | null): AuthMode {
+  return value === 'signup' ? 'signup' : 'signin';
+}
 
 /**
  * Creates a default `patient_profiles` row when the signed-in user has none
@@ -51,30 +57,53 @@ async function ensureProfileRow(supabase: SupabaseClient, user: AuthUser): Promi
 
 /**
  * `useSearchParams` must sit under a Suspense boundary in a prerendered
- * Client Component, so the page shell delegates to {@link LoginForm}.
+ * Client Component, so the page shell delegates to {@link LoginRoute}.
  */
 export default function LoginPage() {
   return (
     <Suspense fallback={<LoginShell />}>
-      <LoginForm />
+      <LoginRoute />
     </Suspense>
   );
 }
 
-function LoginForm() {
-  const router = useRouter();
+/**
+ * Reads the query string: `mode` picks the tab (`/login?mode=signup` opens
+ * Create Account, `/login?mode=signin` opens Sign In) and `error` carries
+ * failures reported by /auth/callback. The form is keyed by the requested
+ * mode, so a deep link always opens the tab it names.
+ */
+function LoginRoute() {
   const searchParams = useSearchParams();
+  const requestedMode = parseAuthMode(searchParams.get('mode'));
+  return (
+    <LoginForm
+      key={requestedMode}
+      initialMode={requestedMode}
+      initialError={searchParams.get('error')}
+    />
+  );
+}
 
-  const [mode, setMode] = useState<AuthMode>('signin');
+function LoginForm({
+  initialMode,
+  initialError,
+}: {
+  initialMode: AuthMode;
+  initialError: string | null;
+}) {
+  const router = useRouter();
+
+  const [mode, setMode] = useState<AuthMode>(initialMode);
   const [fullName, setFullName] = useState('');
   const [phone, setPhone] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  // Seed from the `error` query param so failures reported by /auth/callback
+  // Seeded from the `error` query param so failures reported by /auth/callback
   // (expired or invalid confirmation links, failed code exchange) are shown.
-  const [error, setError] = useState<string | null>(() => searchParams.get('error'));
+  const [error, setError] = useState<string | null>(initialError);
   const [notice, setNotice] = useState<string | null>(null);
 
   const isSignUp = mode === 'signup';
@@ -414,8 +443,10 @@ function LoginForm() {
               <span className="h-px flex-1 bg-slate-200 dark:bg-slate-700" />
             </div>
 
+            {/* Guests who choose the map here should not meet the welcome screen again this session. */}
             <Link
               href="/"
+              onClick={dismissSplash}
               className="flex w-full items-center justify-center gap-2 rounded-md border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 transition-colors hover:border-teal-300 hover:bg-teal-50 hover:text-teal-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 focus-visible:ring-offset-2 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:border-teal-700 dark:hover:bg-teal-950/40 dark:hover:text-teal-200 dark:focus-visible:ring-offset-slate-900"
             >
               <Map className="h-4 w-4" aria-hidden="true" />
