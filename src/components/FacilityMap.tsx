@@ -22,7 +22,8 @@
  *
  * Directions: pass `activeRouteCoordinates` to draw the road route and fit it
  * into view, `originLocation` for a chosen starting point, `userLocation` for
- * the device position, and `onMapClick` while the user may drop a starting pin.
+ * the device position, and `onMapClick` plus `crosshair` while the user may
+ * drop a starting pin.
  */
 
 import { useCallback, useEffect, useMemo, useRef, type RefObject } from 'react';
@@ -260,6 +261,10 @@ const MARKER_CSS = `
   color: #94a3b8;
 }
 .dark .leaflet-container .leaflet-control-attribution a { color: #cbd5e1; }
+/* Phones: keep the OpenStreetMap credit above the bottom navigation bar. */
+@media (width < 48rem) {
+  .leaflet-container .leaflet-bottom { bottom: 64px; }
+}
 `;
 
 /* -------------------------------------------------------------------------- */
@@ -288,11 +293,10 @@ export interface FacilityMapProps {
   originLocation?: { position: [number, number]; label: string } | null;
   /** Road route to draw and fit into view, as `[latitude, longitude]` pairs. */
   activeRouteCoordinates?: [number, number][] | null;
-  /**
-   * When set, taps on empty map (not on a marker) report their coordinates
-   * and the cursor becomes a crosshair, so the user can drop a starting pin.
-   */
+  /** When set, taps on empty map (not on a marker) report their coordinates. */
   onMapClick?: (coords: [number, number]) => void;
+  /** Shows a crosshair cursor, for when a tap will drop a starting pin. */
+  crosshair?: boolean;
   /**
    * Returns the floating UI footprint at the moment of a flight, so the
    * target lands in the uncovered part of the map. Measuring on demand keeps
@@ -319,6 +323,7 @@ export default function FacilityMap({
   originLocation = null,
   activeRouteCoordinates = null,
   onMapClick,
+  crosshair = false,
   getFocusPadding,
   mapRef,
   center = ABUJA_CENTER,
@@ -329,7 +334,7 @@ export default function FacilityMap({
   const hasRoute = activeRouteCoordinates !== null && activeRouteCoordinates.length >= 2;
 
   return (
-    <div className={`relative ${className} ${onMapClick ? '[&_.leaflet-container]:cursor-crosshair' : ''}`}>
+    <div className={`relative ${className} ${crosshair ? '[&_.leaflet-container]:cursor-crosshair' : ''}`}>
       <style>{MARKER_CSS}</style>
       <MapContainer
         ref={mapRef}

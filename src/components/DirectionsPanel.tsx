@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import type { FormEvent, ReactNode } from 'react';
 import {
   AlertCircle,
   ArrowLeft,
@@ -20,24 +20,20 @@ import {
   originCoords,
   originLabel,
   type AbujaPreset,
+  type AddressSearchState,
   type GpsState,
   type Origin,
   type RouteState,
 } from '@/lib/directions';
-import {
-  formatDriveTime,
-  placeDetail,
-  placeShortName,
-  searchAbujaAddress,
-  type GeocodedPlace,
-} from '@/lib/routing';
+import { formatDriveTime, placeDetail, placeShortName, type GeocodedPlace } from '@/lib/routing';
 import type { Facility } from '@/types/database';
 
 /**
  * The in-app Directions view shown in the left panel: starting-point picker
  * (GPS, a typed address, Abuja landmarks or a map pin), destination with a
- * Google Maps hand-off, route summary and turn-by-turn steps. Route state and
- * handlers come from `useDirections`; only the address search is local.
+ * Google Maps hand-off, route summary and turn-by-turn steps. Presentational:
+ * all state and handlers, the address search included, come from `useDirections`,
+ * so nothing is lost when the phone sheet holding this panel closes.
  */
 export interface DirectionsPanelProps {
   facility: Facility;
@@ -50,6 +46,10 @@ export interface DirectionsPanelProps {
   onRetryGps: () => void;
   onUsePreset: (presetId: string) => void;
   onUseAddress: (place: GeocodedPlace) => void;
+  addressText: string;
+  onAddressTextChange: (text: string) => void;
+  addressSearch: AddressSearchState;
+  onSearchAddress: (query: string) => void;
 }
 
 const ICON_BUTTON =
@@ -65,79 +65,15 @@ const OPTION_IDLE =
 const AMBER_NOTICE =
   'flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-200';
 
+/** 16px on phones: smaller text makes iOS Safari zoom the page on focus. */
 const ADDRESS_INPUT =
-  'block w-full rounded-md border border-slate-300 bg-white py-2 pl-9 pr-3 text-sm text-slate-900 shadow-sm transition-colors placeholder:text-slate-400 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-500';
+  'block w-full rounded-md border border-slate-300 bg-white py-2 pl-9 pr-3 text-base text-slate-900 md:text-sm shadow-sm transition-colors placeholder:text-slate-400 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-500';
 
 const SEARCH_BUTTON =
   'inline-flex shrink-0 items-center gap-1.5 rounded-md bg-slate-900 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-white dark:focus-visible:ring-offset-slate-900';
 
 const HANDOFF_BUTTON =
   'flex w-full items-center justify-center gap-2 rounded-md bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white shadow-md shadow-emerald-600/25 transition-colors hover:bg-emerald-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 dark:hover:bg-emerald-500 dark:focus-visible:ring-offset-slate-900';
-
-/* -------------------------------------------------------------------------- */
-/*                                Address search                              */
-/* -------------------------------------------------------------------------- */
-
-interface AddressSearchState {
-  status: 'idle' | 'searching' | 'done' | 'error';
-  /** The submitted text, for the "no matches" wording. */
-  query: string;
-  results: GeocodedPlace[];
-  error: string | null;
-}
-
-const SEARCH_IDLE: AddressSearchState = { status: 'idle', query: '', results: [], error: null };
-
-/**
- * Looks up a typed address through Nominatim on an explicit submit. Stale
- * responses are dropped, and the request in flight is aborted on unmount.
- */
-function useAddressSearch() {
-  const [state, setState] = useState<AddressSearchState>(SEARCH_IDLE);
-  const request = useRef<{ id: number; controller: AbortController | null }>({
-    id: 0,
-    controller: null,
-  });
-
-  const cancel = useCallback(() => {
-    request.current.controller?.abort();
-    request.current = { id: request.current.id + 1, controller: null };
-  }, []);
-
-  const search = useCallback((query: string, onFound: (place: GeocodedPlace) => void) => {
-    const trimmed = query.trim();
-    if (!trimmed) return;
-
-    request.current.controller?.abort();
-    const controller = new AbortController();
-    const id = request.current.id + 1;
-    request.current = { id, controller };
-    setState({ status: 'searching', query: trimmed, results: [], error: null });
-
-    searchAbujaAddress(trimmed, controller.signal)
-      .then((results) => {
-        if (request.current.id !== id) return;
-        setState({ status: 'done', query: trimmed, results, error: null });
-        // The best match becomes the starting point straight away; the rest
-        // stay listed in case another one was meant.
-        const top = results[0];
-        if (top) onFound(top);
-      })
-      .catch(() => {
-        if (request.current.id !== id) return;
-        setState({
-          status: 'error',
-          query: trimmed,
-          results: [],
-          error: 'The address service could not be reached. Check your connection and try again.',
-        });
-      });
-  }, []);
-
-  useEffect(() => cancel, [cancel]);
-
-  return { state, search };
-}
 
 /* -------------------------------------------------------------------------- */
 /*                                    Panel                                   */
@@ -154,12 +90,13 @@ export default function DirectionsPanel({
   onRetryGps,
   onUsePreset,
   onUseAddress,
+  addressText,
+  onAddressTextChange,
+  addressSearch,
+  onSearchAddress,
 }: DirectionsPanelProps) {
   const locating = gps.status === 'locating';
   const result = route.status === 'ready' ? route.result : null;
-
-  const [addressText, setAddressText] = useState('');
-  const { state: addressSearch, search } = useAddressSearch();
   const searching = addressSearch.status === 'searching';
 
   // The destination is always pre-filled; the starting point too, once known.
@@ -170,7 +107,7 @@ export default function DirectionsPanel({
 
   function submitAddress(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    search(addressText, onUseAddress);
+    onSearchAddress(addressText);
   }
 
   const gpsStatusText = locating
@@ -195,7 +132,8 @@ export default function DirectionsPanel({
           <Navigation className="h-4 w-4 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
           Directions
         </span>
-        <button type="button" onClick={onClose} title="Close directions" className={`${ICON_BUTTON} ml-auto`}>
+        {/* Phones already have the sheet's own close button just above this header. */}
+        <button type="button" onClick={onClose} title="Close directions" className={`${ICON_BUTTON} ml-auto max-md:hidden`}>
           <X className="h-4 w-4" aria-hidden="true" />
           <span className="sr-only">Close directions</span>
         </button>
@@ -245,7 +183,7 @@ export default function DirectionsPanel({
               className="flex w-11 shrink-0 flex-col items-center justify-center gap-0.5 rounded-md border border-slate-200 bg-white text-slate-600 transition-colors hover:border-slate-300 hover:bg-slate-50 hover:text-emerald-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 disabled:cursor-wait disabled:opacity-60 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-emerald-300"
             >
               <RotateCcw className="h-4 w-4" aria-hidden="true" />
-              <span className="text-[10px] font-medium">Retry</span>
+              <span className="text-xs font-medium">Retry</span>
             </button>
           </div>
 
@@ -270,7 +208,7 @@ export default function DirectionsPanel({
                   id="directions-address"
                   type="text"
                   value={addressText}
-                  onChange={(event) => setAddressText(event.target.value)}
+                  onChange={(event) => onAddressTextChange(event.target.value)}
                   placeholder="Enter starting address, estate, or area in Abuja..."
                   autoComplete="off"
                   enterKeyHint="search"

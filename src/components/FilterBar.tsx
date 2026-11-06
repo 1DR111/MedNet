@@ -73,11 +73,11 @@ export const EMPTY_FILTERS: FacilityFilters = {
 };
 
 /**
- * Search box width. On phones it leaves room for the Settings button that
- * floats at the top-right; from `sm` up that button sits beside the account
- * pill and the box can take its full width.
+ * Search box width. Phones: the full width of the parent, which keeps the
+ * screen gutters. From `md` up: a fixed column at the top-left, beside the
+ * floating Settings and account controls.
  */
-const SEARCH_WIDTH = 'w-[360px] max-w-[calc(100vw-5.25rem)] sm:w-[400px] sm:max-w-[calc(100vw-2rem)]';
+const SEARCH_WIDTH = 'w-full md:w-[400px] md:max-w-[calc(100vw-2rem)]';
 
 const PLAN_MENU_WIDTH = 300;
 /** Minimum gap (px) between the HMO & Plan panel and the viewport edge. */
@@ -103,6 +103,10 @@ function anchorBelow(chip: HTMLElement, wrapper: HTMLElement): Anchor {
 
 const ICON_BUTTON =
   'flex h-9 w-9 shrink-0 items-center justify-center rounded-md transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500';
+
+/** The sidebar toggle: wider screens only, since phones use the bottom navigation instead. */
+const TOGGLE_BUTTON =
+  'hidden h-9 w-9 shrink-0 items-center justify-center rounded-md text-slate-600 transition-colors hover:bg-slate-100 hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 md:flex dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-slate-100';
 
 export default function FilterBar({
   filters,
@@ -253,7 +257,7 @@ export default function FilterBar({
           aria-expanded={drawerOpen}
           aria-controls={drawerId}
           title={drawerOpen ? 'Hide panel' : 'Show panel'}
-          className={`${ICON_BUTTON} text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-slate-100`}
+          className={TOGGLE_BUTTON}
         >
           {drawerOpen ? (
             <PanelLeftClose className="h-5 w-5" aria-hidden="true" />
@@ -266,6 +270,7 @@ export default function FilterBar({
         <label htmlFor="facility-search" className="sr-only">
           Search facilities
         </label>
+        {/* 16px on phones: smaller text makes iOS Safari zoom the page on focus. */}
         <input
           id="facility-search"
           type="search"
@@ -274,7 +279,7 @@ export default function FilterBar({
           placeholder="Search hospitals, specialties (e.g. Pediatrics), areas..."
           autoComplete="off"
           enterKeyHint="search"
-          className="h-full min-w-0 flex-1 bg-transparent px-1 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none dark:text-slate-100 dark:placeholder:text-slate-500 [&::-webkit-search-cancel-button]:hidden"
+          className="h-full min-w-0 flex-1 bg-transparent px-1 text-base text-slate-900 placeholder:text-slate-400 focus:outline-none md:text-sm dark:text-slate-100 dark:placeholder:text-slate-500 [&::-webkit-search-cancel-button]:hidden"
         />
 
         {searchQuery ? (
@@ -301,15 +306,16 @@ export default function FilterBar({
         {trailing}
       </form>
 
-      {/* Filter chips. Phones: one scrollable row with faded edges. Wider
-          screens: wraps, so no chip is ever clipped; only the chips themselves
-          take pointer events there, leaving the map clickable around them. */}
+      {/* Filter chips. Phones: one full-width row that scrolls sideways with
+          faded edges. Wider screens: wraps, so no chip is ever clipped; only
+          the chips themselves take pointer events there, leaving the map
+          clickable around them. */}
       <div ref={stripWrapperRef} className="relative">
         <div
           ref={stripRef}
           role="group"
           aria-label="Quick filters"
-          className={`pointer-events-auto flex w-[360px] max-w-[calc(100vw-2rem)] gap-2 overflow-x-auto py-1.5 pr-4 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:pointer-events-none sm:w-auto sm:flex-wrap sm:overflow-visible sm:pr-0 sm:[mask-image:none] ${stripMask}`}
+          className={`pointer-events-auto flex w-full gap-2 overflow-x-auto py-1.5 pr-4 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden md:pointer-events-none md:w-auto md:flex-wrap md:overflow-visible md:pr-0 md:[mask-image:none] ${stripMask}`}
         >
           {TYPE_OPTIONS.map((option) => {
             const Icon = option.icon;
@@ -512,7 +518,7 @@ function SelectControl({
           id={id}
           value={value}
           onChange={(event) => onChange(event.target.value)}
-          className="block w-full appearance-none rounded-md border border-slate-300 bg-white py-2 pl-3 pr-9 text-sm text-slate-900 shadow-sm transition-colors focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+          className="block w-full appearance-none rounded-md border border-slate-300 bg-white py-2 pl-3 pr-9 text-base text-slate-900 shadow-sm transition-colors focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 md:text-sm dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
         >
           {children}
         </select>

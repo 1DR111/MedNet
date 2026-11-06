@@ -87,7 +87,7 @@ export default function FacilityCard({
     <article
       onClick={onSelect ? handleSelect : undefined}
       data-selected={isSelected || undefined}
-      className={`group relative flex flex-col gap-4 rounded-lg border bg-white p-5 text-slate-900 shadow-sm transition-shadow dark:bg-slate-900 dark:text-slate-100 ${
+      className={`group relative flex w-full min-w-0 flex-col gap-4 rounded-lg border bg-white p-4 text-slate-900 shadow-sm transition-shadow sm:p-5 dark:bg-slate-900 dark:text-slate-100 ${
         isSelected
           ? 'border-emerald-500 ring-2 ring-emerald-500/30 shadow-md'
           : 'border-slate-200 hover:border-slate-300 hover:shadow-md dark:border-slate-800 dark:hover:border-slate-700'

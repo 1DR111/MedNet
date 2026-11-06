@@ -14,7 +14,13 @@ import {
   requestPosition,
   type LatLng,
 } from '@/lib/geolocation';
-import { getRoute, placeShortName, type GeocodedPlace, type RouteResult } from '@/lib/routing';
+import {
+  getRoute,
+  placeShortName,
+  searchAbujaAddress,
+  type GeocodedPlace,
+  type RouteResult,
+} from '@/lib/routing';
 import type { Facility } from '@/types/database';
 
 /* --------------------------------- Presets -------------------------------- */
@@ -99,6 +105,15 @@ export interface RouteState {
   result: RouteResult | null;
 }
 
+/** A typed starting address looked up through Nominatim. */
+export interface AddressSearchState {
+  status: 'idle' | 'searching' | 'done' | 'error';
+  /** The submitted text, for the "no matches" wording. */
+  query: string;
+  results: GeocodedPlace[];
+  error: string | null;
+}
+
 export interface Directions {
   /** Facility directions are being shown for; `null` when the panel is closed. */
   target: Facility | null;
@@ -118,9 +133,18 @@ export interface Directions {
   useAddress: (place: GeocodedPlace) => void;
   /** Starts from a point tapped on the map. */
   usePin: (coords: LatLng) => void;
+  /** Text in the starting-address field; kept here so it survives the panel closing. */
+  addressText: string;
+  setAddressText: (text: string) => void;
+  addressSearch: AddressSearchState;
+  /** Looks up `query` in Abuja; the best match becomes the starting point. */
+  searchAddress: (query: string) => void;
 }
 
 const GPS_IDLE: GpsState = { status: 'idle', coords: null, error: null };
+const SEARCH_IDLE: AddressSearchState = { status: 'idle', query: '', results: [], error: null };
+const ADDRESS_SERVICE_ERROR =
+  'The address service could not be reached. Check your connection and try again.';
 
 /* ---------------------------------- Hook ---------------------------------- */
 
@@ -129,6 +153,8 @@ export function useDirections(): Directions {
   const [origin, setOrigin] = useState<Origin | null>(null);
   const [gps, setGps] = useState<GpsState>(GPS_IDLE);
   const [route, setRoute] = useState<RouteState>({ status: 'idle', result: null });
+  const [addressText, setAddressText] = useState('');
+  const [addressSearch, setAddressSearch] = useState<AddressSearchState>(SEARCH_IDLE);
 
   // Mirrors of the latest values for async callbacks. Written only from event
   // handlers and promise callbacks, never during render.
@@ -140,6 +166,10 @@ export function useDirections(): Directions {
     controller: null,
   });
   const gpsRequest = useRef(0);
+  const addressRequest = useRef<{ id: number; controller: AbortController | null }>({
+    id: 0,
+    controller: null,
+  });
 
   const commitTarget = useCallback((next: Facility | null) => {
     targetRef.current = next;
@@ -263,7 +293,9 @@ export function useDirections(): Directions {
     [abandonLocating, commitOrigin, requestRoute],
   );
 
-  const useAddress = useCallback(
+  // Named without the `use` prefix because `searchAddress` calls it from a
+  // promise callback; it is exposed as `useAddress` alongside the others.
+  const startFromAddress = useCallback(
     (place: GeocodedPlace) => {
       abandonLocating();
       commitOrigin({ kind: 'address', place });
@@ -271,6 +303,42 @@ export function useDirections(): Directions {
       if (facility) requestRoute([place.lat, place.lng], facility);
     },
     [abandonLocating, commitOrigin, requestRoute],
+  );
+
+  const cancelAddressSearch = useCallback(() => {
+    addressRequest.current.controller?.abort();
+    addressRequest.current = { id: addressRequest.current.id + 1, controller: null };
+  }, []);
+
+  /**
+   * Looks up a typed address on an explicit submit (Nominatim allows one
+   * request per second). Stale responses are dropped; the best match becomes
+   * the starting point straight away and the rest stay listed in case another
+   * one was meant.
+   */
+  const searchAddress = useCallback(
+    (query: string) => {
+      const trimmed = query.trim();
+      if (!trimmed) return;
+      addressRequest.current.controller?.abort();
+      const controller = new AbortController();
+      const id = addressRequest.current.id + 1;
+      addressRequest.current = { id, controller };
+      setAddressSearch({ status: 'searching', query: trimmed, results: [], error: null });
+
+      searchAbujaAddress(trimmed, controller.signal)
+        .then((results) => {
+          if (addressRequest.current.id !== id) return;
+          setAddressSearch({ status: 'done', query: trimmed, results, error: null });
+          const top = results[0];
+          if (top) startFromAddress(top);
+        })
+        .catch(() => {
+          if (addressRequest.current.id !== id) return;
+          setAddressSearch({ status: 'error', query: trimmed, results: [], error: ADDRESS_SERVICE_ERROR });
+        });
+    },
+    [startFromAddress],
   );
 
   const usePin = useCallback(
@@ -284,7 +352,13 @@ export function useDirections(): Directions {
   );
 
   // Abort anything still in flight when the dashboard unmounts.
-  useEffect(() => cancelRoute, [cancelRoute]);
+  useEffect(
+    () => () => {
+      cancelRoute();
+      cancelAddressSearch();
+    },
+    [cancelRoute, cancelAddressSearch],
+  );
 
   return useMemo(
     () => ({
@@ -297,9 +371,28 @@ export function useDirections(): Directions {
       useGps,
       retryGps,
       usePreset,
-      useAddress,
+      useAddress: startFromAddress,
       usePin,
+      addressText,
+      setAddressText,
+      addressSearch,
+      searchAddress,
     }),
-    [target, origin, gps, route, start, close, useGps, retryGps, usePreset, useAddress, usePin],
+    [
+      target,
+      origin,
+      gps,
+      route,
+      start,
+      close,
+      useGps,
+      retryGps,
+      usePreset,
+      startFromAddress,
+      usePin,
+      addressText,
+      addressSearch,
+      searchAddress,
+    ],
   );
 }

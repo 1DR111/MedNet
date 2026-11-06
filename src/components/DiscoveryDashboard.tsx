@@ -1,6 +1,14 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
@@ -32,9 +40,12 @@ import {
   ShieldAlert,
   ShieldCheck,
   Trash2,
+  UserPlus,
   Wallet,
   X,
 } from 'lucide-react';
+import BottomNav, { BOTTOM_NAV_HEIGHT, type MobileTab } from '@/components/BottomNav';
+import BottomSheet from '@/components/BottomSheet';
 import DirectionsPanel from '@/components/DirectionsPanel';
 import {
   HmoCompatibility,
@@ -60,6 +71,7 @@ import {
   type FacilityWithHMO,
 } from '@/lib/facilities';
 import { haversineKm, type LatLng } from '@/lib/geolocation';
+import { DESKTOP_QUERY, useMediaQuery } from '@/lib/media';
 import {
   clearRecents,
   forgetFacility,
@@ -101,17 +113,18 @@ function MapSkeleton() {
 /* -------------------------------------------------------------------------- */
 
 const DRAWER_ID = 'discovery-drawer';
-/** Tailwind `sm`: from here the drawer sits beside the map instead of over its top. */
-const DESKTOP_QUERY = '(min-width: 640px)';
 /** Breathing room (px) between floating UI and a flight target. */
 const FOCUS_GUTTER = 16;
-/** Height (px) of the bottom band on phones: zoom controls and toasts. */
-const MOBILE_BOTTOM_UI = 140;
+/** Height (px) of the zoom button stack, for deciding whether it fits above a sheet. */
+const ZOOM_STACK_HEIGHT = 92;
+/** Extra top padding (px) on phones so a flown-to pin's head clears the chip strip. */
+const MARKER_HEADROOM = 48;
 
 const PROFILE_COLUMNS =
   'id, email, full_name, phone, has_hmo, hmo_id, hmo_plan_tier, hmo_enrollee_id, default_city, onboarding_completed, created_at, updated_at';
 
-const BOX_WIDTH = 'w-[360px] max-w-[calc(100vw-2rem)] sm:w-[400px]';
+/** Desktop sidebar width; on phones the same panels appear in a full-width sheet. */
+const BOX_WIDTH = 'w-full md:w-[400px]';
 
 /** Floating white panel (search box, drawer, menus, controls). */
 const SURFACE =
@@ -129,6 +142,13 @@ type Notice = {
 } | null;
 
 type DrawerMode = 'directions' | 'details' | 'idle' | 'results';
+
+/**
+ * Which panel the phone bottom sheet shows, if any. `place` follows the
+ * selection (directions when active, otherwise the facility's details); the
+ * others map to the bottom navigation tabs.
+ */
+type MobileSheet = 'place' | 'results' | 'recents' | 'account';
 
 /** What the client knows about the session, checked on mount. */
 type AuthState = 'unknown' | 'guest' | 'signed-in';
@@ -228,7 +248,14 @@ export default function DiscoveryDashboard({
     filtersFor(resolveCoverage(patientProfile, null)),
   );
   const [selectedFacilityId, setSelectedFacilityId] = useState<string | null>(null);
+  /** Desktop sidebar visibility. */
   const [drawerOpen, setDrawerOpen] = useState(true);
+  /** Phone bottom sheet; `null` shows the full map. */
+  const [sheet, setSheet] = useState<MobileSheet | null>(null);
+  /** Open sheet size, so the zoom buttons can sit above it or step aside. */
+  const [sheetMetrics, setSheetMetrics] = useState({ height: 0, roomForControls: true });
+  // Server rendering assumes a wide screen; phones switch to sheets once hydrated.
+  const isDesktop = useMediaQuery(DESKTOP_QUERY, true);
   const [signingOut, setSigningOut] = useState(false);
   const [notice, setNotice] = useState<Notice>(null);
 
@@ -247,6 +274,9 @@ export default function DiscoveryDashboard({
   /** The top-left stack: search box, chips and drawer. */
   const clusterRef = useRef<HTMLDivElement>(null);
   const drawerRef = useRef<HTMLElement>(null);
+  const sheetRef = useRef<HTMLElement>(null);
+  const sheetBodyRef = useRef<HTMLDivElement>(null);
+  const navRef = useRef<HTMLElement>(null);
 
   /* ------------------------------- Derived data ---------------------------- */
 
@@ -302,6 +332,8 @@ export default function DiscoveryDashboard({
       : isIdle
         ? 'idle'
         : 'results';
+  const activeTab: MobileTab =
+    sheet === null ? 'map' : sheet === 'recents' ? 'recents' : sheet === 'account' ? 'profile' : 'search';
 
   const profileHmo = profile?.hmo_id
     ? (hmos.find((hmo) => hmo.id === profile.hmo_id) ?? null)
@@ -331,10 +363,12 @@ export default function DiscoveryDashboard({
    * cluster (phones), whatever their current height.
    */
   const getFocusPadding = useCallback((): FocusPadding => {
-    const cluster = clusterRef.current?.getBoundingClientRect();
+    // The search box and chips are the cluster's first child; the cluster
+    // itself reaches the bottom of the screen on wider screens.
+    const bar = clusterRef.current?.firstElementChild?.getBoundingClientRect();
     const drawer = drawerRef.current;
     const drawerRect = drawer && !drawer.hidden ? drawer.getBoundingClientRect() : null;
-    const clusterBottom = (cluster?.bottom ?? 0) + FOCUS_GUTTER;
+    const clusterBottom = (bar?.bottom ?? 0) + FOCUS_GUTTER;
 
     if (window.matchMedia(DESKTOP_QUERY).matches) {
       if (drawerRect) {
@@ -345,7 +379,13 @@ export default function DiscoveryDashboard({
       }
       return { topLeft: [FOCUS_GUTTER, clusterBottom], bottomRight: [FOCUS_GUTTER, FOCUS_GUTTER] };
     }
-    return { topLeft: [0, clusterBottom], bottomRight: [0, MOBILE_BOTTOM_UI] };
+    // Phones: the search cluster spans the top; the nav bar and any open
+    // sheet cover the bottom.
+    const sheetHeight = sheetRef.current?.getBoundingClientRect().height ?? 0;
+    return {
+      topLeft: [0, clusterBottom + MARKER_HEADROOM],
+      bottomRight: [0, BOTTOM_NAV_HEIGHT + sheetHeight + FOCUS_GUTTER],
+    };
   }, []);
 
   /* -------------------------------- Effects -------------------------------- */
@@ -405,10 +445,42 @@ export default function DiscoveryDashboard({
     void import('@/components/FacilityMap');
   }, [showSplash]);
 
-  // Start each drawer view at the top.
+  // Start each panel view at the top.
   useEffect(() => {
     drawerRef.current?.scrollTo({ top: 0 });
-  }, [drawerMode, selectedFacilityId]);
+    sheetBodyRef.current?.scrollTo({ top: 0 });
+  }, [drawerMode, selectedFacilityId, sheet]);
+
+  // Measure the open sheet so the zoom buttons can ride just above it, or
+  // step aside when the sheet reaches up to the search cluster. The layout
+  // effect measures before a new sheet's first paint; the observer follows
+  // later size changes (expand, collapse, content).
+  const measureSheet = useCallback(() => {
+    const sheetElement = sheetRef.current;
+    if (!sheetElement) return;
+    const height = sheetElement.getBoundingClientRect().height;
+    const barBottom = clusterRef.current?.firstElementChild?.getBoundingClientRect().bottom ?? 0;
+    const sheetTop = window.innerHeight - BOTTOM_NAV_HEIGHT - height;
+    const roomForControls = sheetTop - barBottom >= ZOOM_STACK_HEIGHT + 2 * FOCUS_GUTTER;
+    setSheetMetrics((current) =>
+      current.height === height && current.roomForControls === roomForControls
+        ? current
+        : { height, roomForControls },
+    );
+  }, []);
+
+  useLayoutEffect(() => {
+    if (isDesktop || !sheet) return;
+    measureSheet();
+  }, [isDesktop, sheet, measureSheet]);
+
+  useEffect(() => {
+    const sheetElement = sheetRef.current;
+    if (isDesktop || !sheet || !sheetElement) return;
+    const observer = new ResizeObserver(measureSheet);
+    observer.observe(sheetElement);
+    return () => observer.disconnect();
+  }, [isDesktop, sheet, measureSheet]);
 
   // Plain confirmations fade out; errors and sticky notices stay.
   useEffect(() => {
@@ -420,16 +492,18 @@ export default function DiscoveryDashboard({
   /* ------------------------------ Interactions ----------------------------- */
 
   const { start: startDirectionsTo } = directions;
+  const directionsTargetId = directions.target?.id ?? null;
 
   const selectFacility = useCallback(
     (facility: Facility) => {
       setSelectedFacilityId(facility.id);
       setDrawerOpen(true);
+      setSheet('place');
       rememberFacility(toRecent(facility));
       // While directions are open, choosing another facility retargets them.
-      if (directionsActive) startDirectionsTo(facility);
+      if (directionsActive && directionsTargetId !== facility.id) startDirectionsTo(facility);
     },
-    [directionsActive, startDirectionsTo],
+    [directionsActive, directionsTargetId, startDirectionsTo],
   );
 
   /** In-app directions: selects the facility and opens the Directions view. */
@@ -437,10 +511,48 @@ export default function DiscoveryDashboard({
     (facility: Facility) => {
       setSelectedFacilityId(facility.id);
       setDrawerOpen(true);
+      setSheet('place');
       rememberFacility(toRecent(facility));
       startDirectionsTo(facility);
     },
     [startDirectionsTo],
+  );
+
+  const closeSheet = useCallback(() => setSheet(null), []);
+
+  /** After a sheet closes, keyboard focus lands on the active bottom tab. */
+  const returnFocusToNav = useCallback(
+    () => navRef.current?.querySelector<HTMLElement>('[aria-pressed="true"]') ?? null,
+    [],
+  );
+
+  /** Bottom navigation: Map shows the full map; the other tabs toggle their sheet. */
+  function handleTab(tab: MobileTab) {
+    if (tab === 'map') {
+      setSheet(null);
+      return;
+    }
+    const target: MobileSheet = tab === 'search' ? 'results' : tab === 'recents' ? 'recents' : 'account';
+    setSheet((current) => (current === target ? null : target));
+  }
+
+  /**
+   * Taps on empty map. While the directions panel is in view (always on wider
+   * screens, on phones while its sheet is up) they drop a starting pin; with
+   * the sheet closed they only bring it back, so the starting point never
+   * moves unseen. Otherwise, on phones, they dismiss whatever sheet is up.
+   */
+  const pinDropActive = directionsActive && (isDesktop || sheet === 'place');
+  const handleMapClick = useCallback(
+    (coords: LatLng) => {
+      if (directionsActive) {
+        if (pinDropActive) directions.usePin(coords);
+        setSheet('place');
+        return;
+      }
+      setSheet(null);
+    },
+    [directions, directionsActive, pinDropActive],
   );
 
   function openRecentFacility(recent: RecentFacility) {
@@ -458,6 +570,8 @@ export default function DiscoveryDashboard({
     // Changing a filter returns to the list, like Google Maps.
     setSelectedFacilityId(null);
     if (directionsActive) directions.close();
+    // On phones a place sheet has nothing left to show, so the list takes over.
+    setSheet((current) => (current === 'place' ? 'results' : current));
   }
 
   /**
@@ -485,12 +599,14 @@ export default function DiscoveryDashboard({
     if (query) rememberSearch(query);
     setSelectedFacilityId(null);
     setDrawerOpen(true);
+    setSheet('results');
     if (directionsActive) directions.close();
   }
 
   function applyRecentSearch(query: string) {
     rememberSearch(query);
     applyFilters({ ...filters, searchQuery: query });
+    setSheet('results');
   }
 
   function resetFilters() {
@@ -515,6 +631,8 @@ export default function DiscoveryDashboard({
     setAuthState('guest');
     setFilters({ ...EMPTY_FILTERS });
     setSelectedFacilityId(null);
+    if (directionsActive) directions.close();
+    setSheet(null);
     setSigningOut(false);
     router.refresh();
   }
@@ -532,8 +650,145 @@ export default function DiscoveryDashboard({
       hmo={profileHmo}
       signingOut={signingOut}
       onSignOut={signOut}
+      onActivate={() => setSheet('account')}
     />
   );
+
+  // The panels are built once and placed in the desktop sidebar or the phone
+  // sheet, so both layouts show exactly the same content.
+  const facilityList = (
+    <FacilityList
+      facilities={visibleFacilities}
+      filters={filters}
+      selectedFacilityId={selectedFacilityId}
+      onSelect={selectFacility}
+      onStartDirections={startDirections}
+      onReset={resetFilters}
+    />
+  );
+
+  const listPanel = isIdle ? (
+    <div>
+      <DrawerHeading
+        title="Verified in Abuja"
+        count={visibleFacilities.length}
+        subtitle={
+          activeHmo
+            ? `Matching your ${activeHmo.name}${filters.planTier ? ` ${filters.planTier}` : ''} plan`
+            : userLocation
+              ? 'Sorted by distance from you'
+              : 'All verified facilities, A to Z'
+        }
+      />
+      {facilityList}
+    </div>
+  ) : (
+    <div>
+      <DrawerHeading
+        title={`${visibleFacilities.length} ${visibleFacilities.length === 1 ? 'result' : 'results'}`}
+        subtitle={
+          [hasQuery ? `“${filters.searchQuery?.trim()}”` : '', describeFilters(filters, hmos)]
+            .filter(Boolean)
+            .join(' · ') || 'Matching your filters'
+        }
+        action={
+          <button
+            type="button"
+            onClick={resetFilters}
+            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-100 hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-slate-100"
+          >
+            <X className="h-3.5 w-3.5" aria-hidden="true" />
+            Clear all
+          </button>
+        }
+      />
+      {facilityList}
+    </div>
+  );
+
+  const recentsPanel = (
+    <RecentsSection
+      searches={recentSearches}
+      facilities={recentFacilities}
+      onSearch={applyRecentSearch}
+      onOpenFacility={openRecentFacility}
+      onClear={clearRecents}
+    />
+  );
+
+  const directionsPanel =
+    directionsActive && directions.target ? (
+      <DirectionsPanel
+        facility={directions.target}
+        origin={directions.origin}
+        gps={directions.gps}
+        route={directions.route}
+        presets={ABUJA_PRESETS}
+        onClose={directions.close}
+        onUseGps={directions.useGps}
+        onRetryGps={directions.retryGps}
+        onUsePreset={directions.usePreset}
+        onUseAddress={directions.useAddress}
+        addressText={directions.addressText}
+        onAddressTextChange={directions.setAddressText}
+        addressSearch={directions.addressSearch}
+        onSearchAddress={directions.searchAddress}
+      />
+    ) : null;
+
+  const detailsPanel = selectedFacility ? (
+    <PlaceDetails
+      facility={selectedFacility}
+      activeHmoId={filters.hmoId}
+      activePlanTier={filters.planTier}
+      onBack={() => {
+        setSelectedFacilityId(null);
+        setSheet('results');
+      }}
+      onStartDirections={startDirections}
+      handoffOrigin={handoffOrigin}
+    />
+  ) : null;
+
+  /** Directions when active, else the selected facility, else the list. */
+  const placePanel = directionsPanel ?? detailsPanel ?? listPanel;
+
+  const sidebarLabel =
+    drawerMode === 'directions'
+      ? 'Directions'
+      : drawerMode === 'details'
+        ? 'Facility details'
+        : drawerMode === 'results'
+          ? 'Search results'
+          : 'Recent and nearby facilities';
+  const sidebarContent =
+    drawerMode === 'idle' ? (
+      <>
+        {recentsPanel}
+        <div className="border-t border-slate-100 dark:border-slate-800">{listPanel}</div>
+      </>
+    ) : (
+      placePanel
+    );
+
+  const sheetView =
+    sheet === 'recents'
+      ? { label: 'Recent searches and viewed facilities', content: recentsPanel }
+      : sheet === 'account'
+        ? {
+            label: 'Account',
+            content: (
+              <AccountPanel profile={profile} hmo={profileHmo} signingOut={signingOut} onSignOut={signOut} />
+            ),
+          }
+        : sheet === 'place'
+          ? {
+              label: directionsPanel ? 'Directions' : detailsPanel ? 'Facility details' : 'Facilities',
+              content: placePanel,
+            }
+          : { label: isIdle ? 'Verified facilities' : 'Search results', content: listPanel };
+
+  const sheetOpen = !isDesktop && sheet !== null;
 
   return (
     <div className="relative h-screen w-screen overflow-hidden bg-slate-200 text-slate-900 supports-[height:100dvh]:h-dvh dark:bg-slate-950 dark:text-slate-100">
@@ -547,17 +802,19 @@ export default function DiscoveryDashboard({
           userLocation={userLocation}
           originLocation={originLocation}
           activeRouteCoordinates={activeRouteCoordinates}
-          onMapClick={directionsActive ? directions.usePin : undefined}
+          onMapClick={directionsActive || sheetOpen ? handleMapClick : undefined}
+          crosshair={pinDropActive}
           getFocusPadding={getFocusPadding}
           mapRef={mapRef}
           className="h-full w-full"
         />
       </div>
 
-      {/* Top-left: search, chips, drawer */}
+      {/* Top: search box and chips. Phones: the full width. Wider screens: a
+          400px column at the top-left with the sidebar beneath it. */}
       <div
         ref={clusterRef}
-        className="pointer-events-none absolute left-4 top-4 z-[1000] flex max-w-[calc(100vw-2rem)] flex-col gap-2"
+        className="pointer-events-none absolute left-0 right-0 top-4 z-[1000] flex flex-col gap-2 px-4 md:bottom-4 md:left-4 md:right-auto md:max-w-[calc(100vw-2rem)] md:px-0"
       >
         <FilterBar
           filters={filters}
@@ -578,116 +835,30 @@ export default function DiscoveryDashboard({
           onToggleDrawer={() => setDrawerOpen((open) => !open)}
           drawerId={DRAWER_ID}
           trailing={
-            <div className="flex items-center gap-1 sm:hidden">
+            <div className="flex items-center gap-1 md:hidden">
               <span className="mx-0.5 h-6 w-px shrink-0 bg-slate-200 dark:bg-slate-700" aria-hidden="true" />
               {accountMenu('compact')}
             </div>
           }
         />
 
-        <section
-          ref={drawerRef}
-          id={DRAWER_ID}
-          hidden={!drawerOpen}
-          aria-label={
-            drawerMode === 'directions'
-              ? 'Directions'
-              : drawerMode === 'details'
-                ? 'Facility details'
-                : drawerMode === 'results'
-                  ? 'Search results'
-                  : 'Recent and nearby facilities'
-          }
-          className={`pointer-events-auto max-h-[min(40vh,20rem)] overflow-y-auto rounded-lg bg-white/95 text-slate-900 shadow-xl ring-1 ring-slate-900/5 backdrop-blur dark:bg-slate-900/95 dark:text-slate-100 dark:ring-white/10 sm:max-h-[calc(100vh-140px)] ${BOX_WIDTH}`}
-        >
-          {drawerMode === 'directions' && directions.target ? (
-            <DirectionsPanel
-              facility={directions.target}
-              origin={directions.origin}
-              gps={directions.gps}
-              route={directions.route}
-              presets={ABUJA_PRESETS}
-              onClose={directions.close}
-              onUseGps={directions.useGps}
-              onRetryGps={directions.retryGps}
-              onUsePreset={directions.usePreset}
-              onUseAddress={directions.useAddress}
-            />
-          ) : drawerMode === 'details' && selectedFacility ? (
-            <PlaceDetails
-              facility={selectedFacility}
-              activeHmoId={filters.hmoId}
-              activePlanTier={filters.planTier}
-              onBack={() => setSelectedFacilityId(null)}
-              onStartDirections={startDirections}
-              handoffOrigin={handoffOrigin}
-            />
-          ) : drawerMode === 'idle' ? (
-            <>
-              <RecentsSection
-                searches={recentSearches}
-                facilities={recentFacilities}
-                onSearch={applyRecentSearch}
-                onOpenFacility={openRecentFacility}
-                onClear={clearRecents}
-              />
-              <div className="border-t border-slate-100 dark:border-slate-800">
-                <DrawerHeading
-                  title="Verified in Abuja"
-                  count={visibleFacilities.length}
-                  subtitle={
-                    activeHmo
-                      ? `Matching your ${activeHmo.name}${filters.planTier ? ` ${filters.planTier}` : ''} plan`
-                      : userLocation
-                        ? 'Sorted by distance from you'
-                        : 'All verified facilities, A to Z'
-                  }
-                />
-                <FacilityList
-                  facilities={visibleFacilities}
-                  filters={filters}
-                  selectedFacilityId={selectedFacilityId}
-                  onSelect={selectFacility}
-                  onStartDirections={startDirections}
-                  onReset={resetFilters}
-                />
-              </div>
-            </>
-          ) : (
-            <div>
-              <DrawerHeading
-                title={`${visibleFacilities.length} ${visibleFacilities.length === 1 ? 'result' : 'results'}`}
-                subtitle={
-                  [hasQuery ? `“${filters.searchQuery?.trim()}”` : '', describeFilters(filters, hmos)]
-                    .filter(Boolean)
-                    .join(' · ') || 'Matching your filters'
-                }
-                action={
-                  <button
-                    type="button"
-                    onClick={resetFilters}
-                    className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-100 hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-slate-100"
-                  >
-                    <X className="h-3.5 w-3.5" aria-hidden="true" />
-                    Clear all
-                  </button>
-                }
-              />
-              <FacilityList
-                facilities={visibleFacilities}
-                filters={filters}
-                selectedFacilityId={selectedFacilityId}
-                onSelect={selectFacility}
-                onStartDirections={startDirections}
-                onReset={resetFilters}
-              />
-            </div>
-          )}
-        </section>
+        {/* Desktop sidebar: hidden below `md` by CSS as well, for the server-rendered
+            HTML. `min-h-0` lets it shrink to whatever the chips leave above `bottom-4`. */}
+        {isDesktop && (
+          <section
+            ref={drawerRef}
+            id={DRAWER_ID}
+            hidden={!drawerOpen}
+            aria-label={sidebarLabel}
+            className={`pointer-events-auto hidden min-h-0 overflow-y-auto rounded-lg bg-white/95 text-slate-900 shadow-xl ring-1 ring-slate-900/5 backdrop-blur dark:bg-slate-900/95 dark:text-slate-100 dark:ring-white/10 md:block ${BOX_WIDTH}`}
+          >
+            {sidebarContent}
+          </section>
+        )}
       </div>
 
-      {/* Top-right: settings (every screen size) and account (wider screens) */}
-      <div className="absolute right-4 top-4 z-[1000] flex items-center gap-2">
+      {/* Top-right, wider screens only: settings and account. Phones reach both from the Profile tab. */}
+      <div className="absolute right-4 top-4 z-[1000] hidden items-center gap-2 md:flex">
         <Link
           href="/settings"
           title="Settings"
@@ -696,37 +867,43 @@ export default function DiscoveryDashboard({
           <Settings className="h-5 w-5" aria-hidden="true" />
           <span className="sr-only">Settings</span>
         </Link>
-        <div className="hidden sm:block">{accountMenu('pill')}</div>
+        {accountMenu('pill')}
       </div>
 
-      {/* Bottom-right: zoom */}
-      <div className={`absolute bottom-6 right-4 z-[1000] flex flex-col overflow-hidden rounded-md ${SURFACE}`}>
-        <button
-          type="button"
-          onClick={() => mapRef.current?.zoomIn()}
-          title="Zoom in"
-          className="flex h-11 w-11 items-center justify-center text-slate-700 transition-colors hover:bg-slate-50 focus:outline-none focus-visible:bg-emerald-50 dark:text-slate-200 dark:hover:bg-slate-800 dark:focus-visible:bg-slate-800"
+      {/* Bottom-right: zoom. Phones: above the nav bar, riding up over an open
+          sheet while there is room for it under the search cluster. */}
+      {(!sheetOpen || sheetMetrics.roomForControls) && (
+        <div
+          className={`absolute bottom-20 right-4 z-[1000] flex flex-col overflow-hidden rounded-md md:bottom-8 ${SURFACE}`}
+          style={sheetOpen ? { bottom: BOTTOM_NAV_HEIGHT + sheetMetrics.height + FOCUS_GUTTER } : undefined}
         >
-          <Plus className="h-5 w-5" aria-hidden="true" />
-          <span className="sr-only">Zoom in</span>
-        </button>
-        <span className="mx-2 h-px bg-slate-200 dark:bg-slate-700" aria-hidden="true" />
-        <button
-          type="button"
-          onClick={() => mapRef.current?.zoomOut()}
-          title="Zoom out"
-          className="flex h-11 w-11 items-center justify-center text-slate-700 transition-colors hover:bg-slate-50 focus:outline-none focus-visible:bg-emerald-50 dark:text-slate-200 dark:hover:bg-slate-800 dark:focus-visible:bg-slate-800"
-        >
-          <Minus className="h-5 w-5" aria-hidden="true" />
-          <span className="sr-only">Zoom out</span>
-        </button>
-      </div>
+          <button
+            type="button"
+            onClick={() => mapRef.current?.zoomIn()}
+            title="Zoom in"
+            className="flex h-11 w-11 items-center justify-center text-slate-700 transition-colors hover:bg-slate-50 focus:outline-none focus-visible:bg-emerald-50 dark:text-slate-200 dark:hover:bg-slate-800 dark:focus-visible:bg-slate-800"
+          >
+            <Plus className="h-5 w-5" aria-hidden="true" />
+            <span className="sr-only">Zoom in</span>
+          </button>
+          <span className="mx-2 h-px bg-slate-200 dark:bg-slate-700" aria-hidden="true" />
+          <button
+            type="button"
+            onClick={() => mapRef.current?.zoomOut()}
+            title="Zoom out"
+            className="flex h-11 w-11 items-center justify-center text-slate-700 transition-colors hover:bg-slate-50 focus:outline-none focus-visible:bg-emerald-50 dark:text-slate-200 dark:hover:bg-slate-800 dark:focus-visible:bg-slate-800"
+          >
+            <Minus className="h-5 w-5" aria-hidden="true" />
+            <span className="sr-only">Zoom out</span>
+          </button>
+        </div>
+      )}
 
-      {/* Toast */}
+      {/* Toast: above the nav bar on phones, above any sheet by z-order */}
       {notice && (
         <div
           role={notice.tone === 'error' ? 'alert' : 'status'}
-          className={`absolute bottom-6 left-4 right-[4.5rem] z-[1000] flex items-start gap-2 rounded-lg px-4 py-3 text-sm shadow-xl ring-1 lg:left-1/2 lg:right-auto lg:w-[32rem] lg:max-w-[calc(100vw-2rem)] lg:-translate-x-1/2 ${
+          className={`absolute bottom-20 left-4 right-[4.5rem] z-[1100] flex items-start gap-2 rounded-lg px-4 py-3 text-sm shadow-xl ring-1 md:bottom-8 lg:left-1/2 lg:right-auto lg:w-[32rem] lg:max-w-[calc(100vw-2rem)] lg:-translate-x-1/2 ${
             notice.tone === 'error'
               ? 'bg-red-50 text-red-800 ring-red-200 dark:bg-red-950 dark:text-red-200 dark:ring-red-900'
               : notice.tone === 'success'
@@ -752,6 +929,23 @@ export default function DiscoveryDashboard({
           </button>
         </div>
       )}
+
+      {/* Phones: the current panel as a sheet above the nav bar */}
+      {sheetOpen && (
+        <BottomSheet
+          key={sheet}
+          ref={sheetRef}
+          bodyRef={sheetBodyRef}
+          label={sheetView.label}
+          onClose={closeSheet}
+          returnFocus={returnFocusToNav}
+        >
+          {sheetView.content}
+        </BottomSheet>
+      )}
+
+      {/* Phones: bottom navigation */}
+      <BottomNav ref={navRef} active={activeTab} onSelect={handleTab} />
     </div>
   );
 }
@@ -1278,16 +1472,60 @@ function TagList({ title, items }: { title: string; items: string[] }) {
 const MENU_ITEM =
   'flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm text-slate-700 transition-colors hover:bg-slate-100 hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 dark:text-slate-200 dark:hover:bg-slate-800 dark:hover:text-slate-100';
 
+/** Rows in the phone account sheet: 44px tall touch targets. */
+const SHEET_ITEM =
+  'flex w-full items-center gap-3 rounded-md px-3 py-3 text-left text-sm font-medium text-slate-700 transition-colors hover:bg-slate-100 hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 dark:text-slate-200 dark:hover:bg-slate-800 dark:hover:text-slate-100';
+
+const SHEET_PRIMARY =
+  'flex w-full items-center justify-center gap-2 rounded-md bg-emerald-600 px-4 py-3 text-sm font-semibold text-white shadow-md shadow-emerald-600/25 transition-colors hover:bg-emerald-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 dark:hover:bg-emerald-500 dark:focus-visible:ring-offset-slate-900';
+
+const SHEET_SECONDARY =
+  'flex w-full items-center justify-center gap-2 rounded-md border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-700 transition-colors hover:border-teal-300 hover:bg-teal-50 hover:text-teal-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 focus-visible:ring-offset-2 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:border-teal-700 dark:hover:bg-teal-950/40 dark:hover:text-teal-200 dark:focus-visible:ring-offset-slate-900';
+
 const COVERAGE_BADGE =
   'inline-flex max-w-full items-center gap-1 rounded-md bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700 ring-1 ring-inset ring-emerald-600/20 dark:bg-emerald-500/10 dark:text-emerald-300 dark:ring-emerald-400/30';
 
 const OUT_OF_POCKET_BADGE =
   'inline-flex items-center gap-1 rounded-md bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600 ring-1 ring-inset ring-slate-500/20 dark:bg-slate-800 dark:text-slate-300 dark:ring-slate-500/30';
 
+/** The patient's saved plan, or "Out-of-Pocket" when none is set. */
+function CoverageBadge({ profile, hmo }: { profile: PatientProfile; hmo: Hmo | null }) {
+  const coverage =
+    profile.has_hmo && hmo
+      ? `${hmo.name}${profile.hmo_plan_tier ? ` · ${profile.hmo_plan_tier}` : ''}`
+      : null;
+  return coverage ? (
+    <span className={COVERAGE_BADGE}>
+      <ShieldCheck className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+      <span className="truncate">{coverage}</span>
+    </span>
+  ) : (
+    <span className={OUT_OF_POCKET_BADGE}>
+      <Wallet className="h-3.5 w-3.5" aria-hidden="true" />
+      Out-of-Pocket
+    </span>
+  );
+}
+
+/** Initials on the brand colour, sized for a menu button or a sheet header. */
+function Avatar({ name, size = 'sm' }: { name: string; size?: 'sm' | 'lg' }) {
+  return (
+    <span
+      aria-hidden="true"
+      className={`flex shrink-0 items-center justify-center rounded-md bg-emerald-600 font-semibold text-white ${
+        size === 'lg' ? 'h-11 w-11 text-sm' : 'h-8 w-8 text-xs'
+      }`}
+    >
+      {getInitials(name)}
+    </span>
+  );
+}
+
 /**
  * Google Maps-style account control. `pill` shows name and coverage inline
- * (top-right on wider screens); `compact` is an avatar for the search box on
- * phones. Both open the same menu with settings, the HMO link and sign-out.
+ * with a dropdown menu (top-right on wider screens). `compact` is an avatar
+ * for the search box on phones; it hands off to `onActivate`, which opens
+ * the account sheet.
  */
 function AccountMenu({
   variant,
@@ -1295,12 +1533,14 @@ function AccountMenu({
   hmo,
   signingOut,
   onSignOut,
+  onActivate,
 }: {
   variant: 'pill' | 'compact';
   profile: PatientProfile | null;
   hmo: Hmo | null;
   signingOut: boolean;
   onSignOut: () => void;
+  onActivate?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -1321,8 +1561,32 @@ function AccountMenu({
     };
   }, [open]);
 
+  if (variant === 'compact') {
+    return profile ? (
+      <button
+        type="button"
+        onClick={onActivate}
+        title={profile.full_name}
+        className="pointer-events-auto flex h-10 w-10 items-center justify-center rounded-md transition-colors hover:bg-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 dark:hover:bg-slate-800"
+      >
+        <Avatar name={profile.full_name} />
+        <span className="sr-only">Account</span>
+      </button>
+    ) : (
+      <button
+        type="button"
+        onClick={onActivate}
+        title="Sign in or set your HMO"
+        className="pointer-events-auto flex h-10 w-10 items-center justify-center rounded-md bg-emerald-600 text-white transition-colors hover:bg-emerald-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 dark:hover:bg-emerald-500"
+      >
+        <LogIn className="h-4 w-4" aria-hidden="true" />
+        <span className="sr-only">Sign in or set your HMO</span>
+      </button>
+    );
+  }
+
   if (!profile) {
-    return variant === 'pill' ? (
+    return (
       <Link
         href="/login"
         className="pointer-events-auto inline-flex h-11 items-center gap-2 rounded-md bg-emerald-600 px-4 text-sm font-semibold text-white shadow-lg shadow-emerald-600/25 transition-colors hover:bg-emerald-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 dark:hover:bg-emerald-500 dark:focus-visible:ring-offset-slate-950"
@@ -1330,44 +1594,8 @@ function AccountMenu({
         <LogIn className="h-4 w-4" aria-hidden="true" />
         Sign In / Set HMO
       </Link>
-    ) : (
-      <Link
-        href="/login"
-        title="Sign in or set your HMO"
-        className="pointer-events-auto flex h-9 w-9 items-center justify-center rounded-md bg-emerald-600 text-white transition-colors hover:bg-emerald-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 dark:hover:bg-emerald-500"
-      >
-        <LogIn className="h-4 w-4" aria-hidden="true" />
-        <span className="sr-only">Sign in or set your HMO</span>
-      </Link>
     );
   }
-
-  const coverage =
-    profile.has_hmo && hmo
-      ? `${hmo.name}${profile.hmo_plan_tier ? ` · ${profile.hmo_plan_tier}` : ''}`
-      : null;
-  const initials = getInitials(profile.full_name);
-
-  const avatar = (
-    <span
-      aria-hidden="true"
-      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-emerald-600 text-xs font-semibold text-white"
-    >
-      {initials}
-    </span>
-  );
-
-  const coverageBadge = coverage ? (
-    <span className={COVERAGE_BADGE}>
-      <ShieldCheck className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-      <span className="truncate">{coverage}</span>
-    </span>
-  ) : (
-    <span className={OUT_OF_POCKET_BADGE}>
-      <Wallet className="h-3.5 w-3.5" aria-hidden="true" />
-      Out-of-Pocket
-    </span>
-  );
 
   return (
     <div ref={rootRef} className="pointer-events-auto relative">
@@ -1377,20 +1605,15 @@ function AccountMenu({
         aria-expanded={open}
         aria-haspopup="menu"
         title={profile.full_name}
-        className={
-          variant === 'pill'
-            ? `flex h-11 items-center gap-2 rounded-md pl-1.5 pr-3 text-sm transition-colors hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 dark:hover:bg-slate-800 ${SURFACE}`
-            : 'flex h-9 w-9 items-center justify-center rounded-md transition-colors hover:bg-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 dark:hover:bg-slate-800'
-        }
+        className={`flex h-11 items-center gap-2 rounded-md pl-1.5 pr-3 text-sm transition-colors hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 dark:hover:bg-slate-800 ${SURFACE}`}
       >
-        {avatar}
-        {variant === 'pill' && (
-          <>
-            <span className="max-w-[9rem] truncate font-medium">{profile.full_name}</span>
-            <span className="max-w-[11rem]">{coverageBadge}</span>
-            <ChevronDown className="h-4 w-4 text-slate-400 dark:text-slate-500" aria-hidden="true" />
-          </>
-        )}
+        <Avatar name={profile.full_name} />
+        <span className="max-w-[7rem] truncate font-medium lg:max-w-[9rem]">{profile.full_name}</span>
+        {/* The badge needs room the 400px search box does not leave at md widths. */}
+        <span className="hidden max-w-[11rem] lg:inline">
+          <CoverageBadge profile={profile} hmo={hmo} />
+        </span>
+        <ChevronDown className="h-4 w-4 text-slate-400 dark:text-slate-500" aria-hidden="true" />
         <span className="sr-only">Account menu</span>
       </button>
 
@@ -1402,7 +1625,9 @@ function AccountMenu({
           <div className="px-2 pb-2 pt-1.5">
             <p className="truncate text-sm font-semibold">{profile.full_name}</p>
             <p className="truncate text-xs text-slate-500 dark:text-slate-400">{profile.email}</p>
-            <p className="mt-2">{coverageBadge}</p>
+            <p className="mt-2">
+              <CoverageBadge profile={profile} hmo={hmo} />
+            </p>
           </div>
           <div className="border-t border-slate-100 pt-1 dark:border-slate-800">
             <Link role="menuitem" href="/settings" className={MENU_ITEM}>
@@ -1430,6 +1655,92 @@ function AccountMenu({
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * Phone account sheet (the Profile tab): who is signed in and their plan with
+ * the account actions, or the ways in for a guest. Everything is full width.
+ */
+function AccountPanel({
+  profile,
+  hmo,
+  signingOut,
+  onSignOut,
+}: {
+  profile: PatientProfile | null;
+  hmo: Hmo | null;
+  signingOut: boolean;
+  onSignOut: () => void;
+}) {
+  if (!profile) {
+    return (
+      <div className="px-4 pb-4 pt-1">
+        <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">Browsing as a guest</h2>
+        <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">
+          Set your HMO plan to show only the facilities that accept it. It is kept on this
+          device. Sign in to keep it on every device.
+        </p>
+        <div className="mt-4 grid gap-2">
+          <Link href="/login?mode=signin" className={SHEET_PRIMARY}>
+            <LogIn className="h-4 w-4" aria-hidden="true" />
+            Sign In
+          </Link>
+          <Link href="/login?mode=signup" className={SHEET_SECONDARY}>
+            <UserPlus className="h-4 w-4" aria-hidden="true" />
+            Create Account
+          </Link>
+        </div>
+        <div className="mt-4 border-t border-slate-100 pt-2 dark:border-slate-800">
+          <Link href="/settings#hmo" className={SHEET_ITEM}>
+            <ShieldCheck className="h-5 w-5 text-slate-400 dark:text-slate-500" aria-hidden="true" />
+            Set HMO Plan
+          </Link>
+          <Link href="/settings" className={SHEET_ITEM}>
+            <Settings className="h-5 w-5 text-slate-400 dark:text-slate-500" aria-hidden="true" />
+            Settings
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="px-4 pb-4 pt-1">
+      <div className="flex items-center gap-3">
+        <Avatar name={profile.full_name} size="lg" />
+        <div className="min-w-0">
+          <p className="truncate text-base font-semibold text-slate-900 dark:text-slate-100">{profile.full_name}</p>
+          <p className="truncate text-sm text-slate-500 dark:text-slate-400">{profile.email}</p>
+        </div>
+      </div>
+      <p className="mt-3">
+        <CoverageBadge profile={profile} hmo={hmo} />
+      </p>
+      <div className="mt-4 border-t border-slate-100 pt-2 dark:border-slate-800">
+        <Link href="/settings" className={SHEET_ITEM}>
+          <Settings className="h-5 w-5 text-slate-400 dark:text-slate-500" aria-hidden="true" />
+          Settings
+        </Link>
+        <Link href="/settings#hmo" className={SHEET_ITEM}>
+          <ShieldCheck className="h-5 w-5 text-slate-400 dark:text-slate-500" aria-hidden="true" />
+          Update HMO Plan
+        </Link>
+        <button
+          type="button"
+          onClick={onSignOut}
+          disabled={signingOut}
+          className={`${SHEET_ITEM} disabled:opacity-60`}
+        >
+          {signingOut ? (
+            <Loader2 className="h-5 w-5 animate-spin text-slate-400 dark:text-slate-500" aria-hidden="true" />
+          ) : (
+            <LogOut className="h-5 w-5 text-slate-400 dark:text-slate-500" aria-hidden="true" />
+          )}
+          Sign Out
+        </button>
+      </div>
     </div>
   );
 }

@@ -489,7 +489,7 @@ function SelectField({
           required={required}
           aria-describedby={hint ? `${id}-hint` : undefined}
           onChange={(e) => onChange(e.target.value)}
-          className="block w-full appearance-none rounded-md border border-slate-300 bg-white py-2.5 pl-10 pr-10 text-sm text-slate-900 shadow-sm transition-colors focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+          className="block w-full appearance-none rounded-md border border-slate-300 bg-white py-2.5 pl-10 pr-10 text-base text-slate-900 shadow-sm transition-colors focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 md:text-sm dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
         >
           {children}
         </select>
