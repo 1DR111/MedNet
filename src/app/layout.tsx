@@ -32,7 +32,13 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       <head>
         <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
       </head>
-      <body className="flex min-h-full flex-col bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
+      {/* Browser extensions such as Grammarly add their own attributes to <body>
+          before React hydrates; that is not a bug in the app, so React is told not
+          to report it. The flag only covers this element's attributes. */}
+      <body
+        suppressHydrationWarning
+        className="flex min-h-full flex-col bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100"
+      >
         <ThemeProvider>{children}</ThemeProvider>
       </body>
     </html>
