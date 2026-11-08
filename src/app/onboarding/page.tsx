@@ -231,8 +231,8 @@ export default function OnboardingPage() {
             </div>
             <h1 className="text-2xl font-semibold tracking-tight">Personalise your search</h1>
             <p className="mt-1 max-w-sm text-sm text-slate-600 dark:text-slate-300">
-              Add your HMO plan and preferred city to see which hospitals, clinics, pharmacies and
-              labs accept your coverage. You can update this at any time.
+              Add your HMO plan and preferred city to see which facilities accept your coverage.
+              You can update this at any time.
             </p>
           </div>
 

@@ -2,6 +2,16 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 /*
+ * Viewports at least 36rem (576px) tall: room for the open map legend above
+ * the search box and chips. Mirrors TALL_QUERY in src/lib/media.ts.
+ */
+@custom-variant tall {
+  @media (min-height: 36rem) {
+    @slot;
+  }
+}
+
+/*
  * Dark mode is class-driven: the theme engine (src/lib/theme.ts and
  * src/components/ThemeProvider.tsx) keeps `.dark` on <html>, so `dark:`
  * utilities follow the user's choice (System, Light or Dark) rather than

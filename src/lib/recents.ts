@@ -9,6 +9,7 @@
  */
 
 import { useSyncExternalStore } from 'react';
+import { isFacilityType } from '@/lib/facilities';
 import type { FacilityType } from '@/types/database';
 
 export const RECENT_FACILITIES_KEY = 'mednet_recent_facilities';
@@ -28,8 +29,6 @@ export interface RecentFacility {
 /*                                  Validation                                */
 /* -------------------------------------------------------------------------- */
 
-const FACILITY_TYPES: readonly string[] = ['hospital', 'clinic', 'pharmacy', 'laboratory'];
-
 function isRecentFacility(value: unknown): value is RecentFacility {
   if (typeof value !== 'object' || value === null) return false;
   const candidate = value as Record<string, unknown>;
@@ -37,8 +36,7 @@ function isRecentFacility(value: unknown): value is RecentFacility {
     typeof candidate.id === 'string' &&
     typeof candidate.name === 'string' &&
     typeof candidate.address === 'string' &&
-    typeof candidate.type === 'string' &&
-    FACILITY_TYPES.includes(candidate.type)
+    isFacilityType(candidate.type)
   );
 }
 

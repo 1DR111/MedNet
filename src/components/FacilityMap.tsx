@@ -20,14 +20,19 @@
  * re-coloured with a CSS filter under `.dark`, and the marker, tooltip and
  * attribution colours below adapt with the same class.
  *
+ * Pins are compact teardrops carrying the category's initial, coloured from
+ * the shared `FACILITY_TYPE_INFO` table (the legend reads the same table).
+ * At city zooms, pins that would overlap are grouped into cluster badges that
+ * show a count; a click on one zooms in two levels. See `FacilityMarkers`.
+ *
  * Directions: pass `activeRouteCoordinates` to draw the road route and fit it
  * into view, `originLocation` for a chosen starting point, `userLocation` for
  * the device position, and `onMapClick` plus `crosshair` while the user may
  * drop a starting pin.
  */
 
-import { useCallback, useEffect, useMemo, useRef, type RefObject } from 'react';
-import L, { type LeafletMouseEvent, type Map as LeafletMap } from 'leaflet';
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react';
+import L, { type LeafletKeyboardEvent, type LeafletMouseEvent, type Map as LeafletMap } from 'leaflet';
 import {
   AttributionControl,
   MapContainer,
@@ -39,6 +44,7 @@ import {
   useMapEvents,
 } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
+import { FACILITY_TYPE_INFO } from '@/lib/facilities';
 import type { Facility, FacilityType } from '@/types/database';
 
 /* -------------------------------------------------------------------------- */
@@ -58,12 +64,27 @@ const ROUTE_MAX_ZOOM = 16;
 const ROUTE_PADDING = 24;
 /** Smallest free width/height (px) kept for a flight target after padding. */
 const MIN_FREE_AREA = 80;
+
+/** Pin box size (px). The letter inside stays large; the box does not. */
+const PIN_SIZE = 28;
+const PIN_SIZE_SELECTED = 34;
 /**
  * How far the pin tip extends below its square icon box, as a fraction of
  * the box size: the square is rotated 45 degrees, so its sharp corner sits
  * (sqrt(2) - 1) / 2 of the size past the bottom edge.
  */
 const PIN_TIP_OVERHANG = (Math.SQRT2 - 1) / 2;
+
+/** Pins are grouped at this zoom and below; one level closer, every pin shows. */
+export const CLUSTER_MAX_ZOOM = 13;
+/** Pins closer than this (px) at the current zoom join one cluster. */
+const CLUSTER_RADIUS = 42;
+/** Cluster badge size (px). */
+const CLUSTER_SIZE = 32;
+/** Zoom levels a cluster click moves in by. */
+const CLUSTER_ZOOM_STEP = 2;
+const CLUSTER_COLOR = '#1e293b'; // slate-800
+const CLUSTER_HOVER_COLOR = '#0f766e'; // teal-700, the brand mark
 
 /** Standard OpenStreetMap raster tiles: free, no key, 19 zoom levels. */
 const TILE_URL = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
@@ -90,29 +111,6 @@ export interface FocusPadding {
 
 const NO_PADDING: FocusPadding = { topLeft: [0, 0], bottomRight: [0, 0] };
 
-const TYPE_LABELS: Record<FacilityType, string> = {
-  hospital: 'Hospital',
-  clinic: 'Clinic',
-  pharmacy: 'Pharmacy',
-  laboratory: 'Laboratory',
-};
-
-/** Marker colour per facility type (Tailwind 600 shades). */
-const MARKER_COLORS: Record<FacilityType, string> = {
-  hospital: '#059669', // emerald-600
-  clinic: '#0d9488', // teal-600
-  pharmacy: '#7c3aed', // violet-600
-  laboratory: '#d97706', // amber-600
-};
-
-/** Single-letter glyph shown inside each pin. */
-const MARKER_GLYPHS: Record<FacilityType, string> = {
-  hospital: 'H',
-  clinic: 'C',
-  pharmacy: 'P',
-  laboratory: 'L',
-};
-
 const USER_COLOR = '#2563eb'; // blue-600
 
 /* -------------------------------------------------------------------------- */
@@ -121,23 +119,44 @@ const USER_COLOR = '#2563eb'; // blue-600
 
 const iconCache = new Map<string, L.DivIcon>();
 
-/** Teardrop pin coloured by facility type, enlarged with a ring when selected. */
+/**
+ * Compact teardrop pin in the category colour with its initial inside,
+ * enlarged with a tinted ring when selected.
+ */
 function getFacilityIcon(type: FacilityType, selected: boolean): L.DivIcon {
   const key = `${type}:${selected ? 'selected' : 'default'}`;
   const cached = iconCache.get(key);
   if (cached) return cached;
 
-  const size = selected ? 40 : 30;
+  const size = selected ? PIN_SIZE_SELECTED : PIN_SIZE;
   const tip = Math.round(size * (1 + PIN_TIP_OVERHANG));
-  const color = MARKER_COLORS[type];
+  const { color, initial } = FACILITY_TYPE_INFO[type];
   const icon = L.divIcon({
     className: 'mednet-marker',
-    html: `<span class="mednet-pin${selected ? ' mednet-pin--selected' : ''}" style="--pin-color:${color};width:${size}px;height:${size}px;"><span class="mednet-pin__glyph">${MARKER_GLYPHS[type]}</span></span>`,
+    html: `<span class="mednet-pin${selected ? ' mednet-pin--selected' : ''}" style="--pin-color:${color};width:${size}px;height:${size}px;"><span class="mednet-pin__glyph">${initial}</span></span>`,
     iconSize: [size, size],
     // The pin tip (bottom centre after rotation) sits on the coordinate; the
     // tooltip opens above the round head.
     iconAnchor: [size / 2, tip],
     tooltipAnchor: [0, -tip],
+  });
+
+  iconCache.set(key, icon);
+  return icon;
+}
+
+/** Rounded slate badge showing how many facilities it stands for. */
+function getClusterIcon(count: number): L.DivIcon {
+  const key = `cluster:${count}`;
+  const cached = iconCache.get(key);
+  if (cached) return cached;
+
+  const icon = L.divIcon({
+    className: 'mednet-marker',
+    html: `<span class="mednet-cluster">${count}</span>`,
+    iconSize: [CLUSTER_SIZE, CLUSTER_SIZE],
+    iconAnchor: [CLUSTER_SIZE / 2, CLUSTER_SIZE / 2],
+    tooltipAnchor: [0, -CLUSTER_SIZE / 2],
   });
 
   iconCache.set(key, icon);
@@ -177,25 +196,26 @@ function getOriginIcon(): L.DivIcon {
  * Styles for the div icons, tooltips, route casing and attribution in both
  * themes. Scoped by class so they never leak out of the map. The `.dark`
  * rules key off the class the theme engine keeps on `<html>`.
+ *
+ * Pins and cluster badges keep their white border in both themes: on the
+ * re-coloured dark tiles it is what separates them from the basemap.
  */
 const MARKER_CSS = `
 .mednet-marker { background: transparent; border: 0; }
 .mednet-pin {
   position: relative;
   display: block;
+  box-sizing: border-box;
   background: var(--pin-color);
+  border: 2px solid #ffffff;
   border-radius: 50% 50% 50% 0;
   transform: rotate(-45deg);
   transform-origin: 50% 50%;
-  box-shadow: 0 0 0 2px #fff, 0 2px 6px rgba(15, 23, 42, 0.35);
-  transition: box-shadow 150ms ease, transform 150ms ease;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.4);
+  transition: box-shadow 150ms ease;
 }
 .mednet-pin--selected {
-  box-shadow: 0 0 0 3px #fff, 0 0 0 7px color-mix(in srgb, var(--pin-color) 45%, transparent), 0 4px 10px rgba(15, 23, 42, 0.4);
-}
-.dark .mednet-pin { box-shadow: 0 0 0 2px #0f172a, 0 2px 6px rgba(0, 0, 0, 0.6); }
-.dark .mednet-pin--selected {
-  box-shadow: 0 0 0 3px #0f172a, 0 0 0 7px color-mix(in srgb, var(--pin-color) 55%, transparent), 0 4px 10px rgba(0, 0, 0, 0.7);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--pin-color) 40%, transparent), 0 2px 6px rgba(15, 23, 42, 0.45);
 }
 .mednet-pin__glyph {
   position: absolute;
@@ -206,13 +226,34 @@ const MARKER_CSS = `
   transform: rotate(45deg);
   color: #ffffff;
   font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 800;
   line-height: 1;
   text-shadow: 0 1px 1px rgba(15, 23, 42, 0.3);
   user-select: none;
 }
 .mednet-pin--selected .mednet-pin__glyph { font-size: 15px; }
+.mednet-cluster {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: ${CLUSTER_SIZE}px;
+  height: ${CLUSTER_SIZE}px;
+  box-sizing: border-box;
+  border: 2px solid #ffffff;
+  border-radius: 8px;
+  background: ${CLUSTER_COLOR};
+  color: #ffffff;
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.4);
+  transition: background-color 150ms ease;
+  user-select: none;
+}
+.leaflet-marker-icon:hover .mednet-cluster,
+.leaflet-marker-icon:focus-visible .mednet-cluster { background: ${CLUSTER_HOVER_COLOR}; }
 .mednet-user { position: relative; display: block; width: 24px; height: 24px; }
 .mednet-user__dot {
   position: absolute; inset: 5px; border-radius: 9999px;
@@ -376,14 +417,12 @@ export default function FacilityMap({
           </>
         )}
 
-        {facilities.map((facility) => (
-          <FacilityMarker
-            key={facility.id}
-            facility={facility}
-            selected={facility.id === selectedFacilityId}
-            onSelect={onSelectFacility}
-          />
-        ))}
+        <FacilityMarkers
+          facilities={facilities}
+          selectedFacilityId={selectedFacilityId}
+          onSelect={onSelectFacility}
+          getFocusPadding={getFocusPadding}
+        />
 
         {originLocation && (
           <Marker
@@ -415,8 +454,263 @@ export default function FacilityMap({
 }
 
 /* -------------------------------------------------------------------------- */
+/*                                   Helpers                                  */
+/* -------------------------------------------------------------------------- */
+
+/** A ref that always holds the latest `value`, for reading inside Leaflet handlers. */
+function useLatestRef<T>(value: T): RefObject<T> {
+  const ref = useRef(value);
+  useEffect(() => {
+    ref.current = value;
+  }, [value]);
+  return ref;
+}
+
+/**
+ * Click plus Enter and Space for a Leaflet marker. Leaflet gives every marker
+ * `role="button"` and a tab stop but only forwards the key events, so without
+ * this a keyboard user can reach a pin or badge and not open it.
+ */
+function activationHandlers(action: () => void) {
+  return {
+    click: action,
+    keydown: (event: LeafletKeyboardEvent) => {
+      const key = event.originalEvent.key;
+      if (key !== 'Enter' && key !== ' ') return;
+      event.originalEvent.preventDefault();
+      action();
+    },
+  };
+}
+
+/**
+ * Names a div-icon marker for assistive technology. Leaflet applies `alt`
+ * only to image icons, so the label goes onto the element once it exists.
+ * `DivIcon` reuses that element when the icon changes, and the `icon`
+ * dependency re-applies the label either way.
+ */
+function useAccessibleName(label: string, icon: L.DivIcon): RefObject<L.Marker | null> {
+  const markerRef = useRef<L.Marker | null>(null);
+  useEffect(() => {
+    markerRef.current?.getElement()?.setAttribute('aria-label', label);
+  }, [label, icon]);
+  return markerRef;
+}
+
+/**
+ * Shrinks padding that would leave less than {@link MIN_FREE_AREA} px of map,
+ * so a small viewport (or one not yet laid out) never yields a NaN zoom.
+ */
+function clampPadding(size: L.Point, padding: FocusPadding): FocusPadding {
+  const clampAxis = (total: number, start: number, end: number): [number, number] => {
+    const covered = start + end;
+    if (covered === 0 || total - covered >= MIN_FREE_AREA) return [start, end];
+    const scale = Math.max(0, total - MIN_FREE_AREA) / covered;
+    return [Math.floor(start * scale), Math.floor(end * scale)];
+  };
+  const [left, right] = clampAxis(size.x, padding.topLeft[0], padding.bottomRight[0]);
+  const [top, bottom] = clampAxis(size.y, padding.topLeft[1], padding.bottomRight[1]);
+  return { topLeft: [left, top], bottomRight: [right, bottom] };
+}
+
+/**
+ * Flies to `target` at `maxZoom`, placing it in the centre of the map area
+ * the floating UI leaves uncovered.
+ */
+function flyToTarget(
+  map: LeafletMap,
+  target: [number, number],
+  maxZoom: number,
+  getPadding: (() => FocusPadding) | undefined,
+): void {
+  const { topLeft, bottomRight } = clampPadding(map.getSize(), getPadding?.() ?? NO_PADDING);
+  // A zero-size bounds plus `maxZoom` is how Leaflet centres a point with padding.
+  map.flyToBounds(L.latLngBounds(target, target), {
+    paddingTopLeft: topLeft,
+    paddingBottomRight: bottomRight,
+    maxZoom,
+    duration: 0.8,
+  });
+}
+
+/* -------------------------------------------------------------------------- */
 /*                                   Markers                                  */
 /* -------------------------------------------------------------------------- */
+
+/** What the map draws for the facilities at the current zoom. */
+type MapItem =
+  | { kind: 'pin'; facility: Facility }
+  | { kind: 'cluster'; key: string; center: [number, number]; facilities: Facility[] };
+
+/** A facility with its pixel position at the zoom being grouped. */
+type Placed = { facility: Facility; point: L.Point };
+
+/** Facilities drawn as one badge, with the running mean of their positions. */
+type Group = { members: Placed[]; sum: L.Point; centre: L.Point };
+
+function addToGroup(group: Group, member: Placed): void {
+  group.members.push(member);
+  group.sum = group.sum.add(member.point);
+  group.centre = group.sum.divideBy(group.members.length);
+}
+
+/** The group whose centre is nearest to `point` within {@link CLUSTER_RADIUS}, if any. */
+function nearestGroup(groups: Group[], point: L.Point, skip?: Group): Group | null {
+  let best: Group | null = null;
+  let bestDistance = CLUSTER_RADIUS;
+  for (const group of groups) {
+    if (group === skip || group.members.length === 0) continue;
+    const distance = point.distanceTo(group.centre);
+    if (distance <= bestDistance) {
+      best = group;
+      bestDistance = distance;
+    }
+  }
+  return best;
+}
+
+/**
+ * Groups facilities whose pins would crowd each other at `zoom`: each
+ * facility joins the group whose centre lies within {@link CLUSTER_RADIUS}
+ * px of it (the nearest, if several), or starts a new one. A facility left
+ * on its own because its neighbours only grouped up after it was placed then
+ * joins the group that has since come within reach, so no lone pin sits
+ * under a cluster badge. A group of one, or one holding the selected
+ * facility, stays as individual pins so the chosen place is always on the
+ * map.
+ *
+ * Pixel positions come from `map.project` at the given zoom. Distances
+ * between them equal distances between `latLngToLayerPoint` results, but
+ * they do not depend on where the layer origin sits during an animation.
+ */
+function groupFacilities(
+  map: LeafletMap,
+  facilities: Facility[],
+  zoom: number,
+  selectedFacilityId: string | null,
+): MapItem[] {
+  if (zoom > CLUSTER_MAX_ZOOM) {
+    return facilities.map((facility) => ({ kind: 'pin', facility }));
+  }
+
+  const groups: Group[] = [];
+  for (const facility of facilities) {
+    const member: Placed = {
+      facility,
+      point: map.project([facility.latitude, facility.longitude], zoom),
+    };
+    const group = nearestGroup(groups, member.point);
+    if (group) addToGroup(group, member);
+    else groups.push({ members: [member], sum: member.point, centre: member.point });
+  }
+
+  // Each merge moves a centre, which can bring another lone pin into reach.
+  let merged = true;
+  while (merged) {
+    merged = false;
+    for (const lone of groups) {
+      if (lone.members.length !== 1) continue;
+      const group = nearestGroup(groups, lone.centre, lone);
+      if (!group || group.members.length < 2) continue;
+      addToGroup(group, lone.members[0]);
+      lone.members = [];
+      merged = true;
+    }
+  }
+
+  const items: MapItem[] = [];
+  for (const group of groups) {
+    const members = group.members.map((member) => member.facility);
+    if (members.length === 0) continue;
+    if (members.length === 1 || members.some((facility) => facility.id === selectedFacilityId)) {
+      members.forEach((facility) => items.push({ kind: 'pin', facility }));
+      continue;
+    }
+    const centre = map.unproject(group.centre, zoom);
+    items.push({
+      kind: 'cluster',
+      key: members
+        .map((facility) => facility.id)
+        .sort()
+        .join('|'),
+      center: [centre.lat, centre.lng],
+      facilities: members,
+    });
+  }
+  return items;
+}
+
+/**
+ * Lives inside the map so it can read the zoom. Regroups the facilities
+ * whenever the zoom, the list or the selection changes, and zooms in two
+ * levels on a cluster click, keeping the cluster clear of the floating UI.
+ */
+function FacilityMarkers({
+  facilities,
+  selectedFacilityId,
+  onSelect,
+  getFocusPadding,
+}: {
+  facilities: Facility[];
+  selectedFacilityId: string | null;
+  onSelect?: (facility: Facility) => void;
+  getFocusPadding?: () => FocusPadding;
+}) {
+  const map = useMap();
+  const [zoom, setZoom] = useState(() => map.getZoom());
+  // A flight cut short by a drag ends with `moveend` only, leaving the map at
+  // a fractional zoom without a `zoomend`, so the grouping resyncs on both.
+  const zoomHandlers = useMemo(() => {
+    const sync = () => setZoom(map.getZoom());
+    return { zoomend: sync, moveend: sync };
+  }, [map]);
+  useMapEvents(zoomHandlers);
+  const paddingRef = useLatestRef(getFocusPadding);
+
+  const items = useMemo(
+    () => groupFacilities(map, facilities, zoom, selectedFacilityId),
+    [map, facilities, zoom, selectedFacilityId],
+  );
+
+  const zoomIntoCluster = useCallback(
+    (center: [number, number]) => {
+      // Rounded, so a click during another flight (when the zoom is
+      // fractional) still lands on a whole level.
+      flyToTarget(
+        map,
+        center,
+        Math.min(Math.round(map.getZoom()) + CLUSTER_ZOOM_STEP, TILE_MAX_ZOOM),
+        paddingRef.current,
+      );
+      // The badge unmounts once its pins split, so keyboard focus moves to
+      // the map itself, where Leaflet's arrow-key panning takes over.
+      map.getContainer().focus({ preventScroll: true });
+    },
+    [map, paddingRef],
+  );
+
+  return (
+    <>
+      {items.map((item) =>
+        item.kind === 'pin' ? (
+          <FacilityMarker
+            key={item.facility.id}
+            facility={item.facility}
+            selected={item.facility.id === selectedFacilityId}
+            onSelect={onSelect}
+          />
+        ) : (
+          <ClusterMarker
+            key={item.key}
+            center={item.center}
+            count={item.facilities.length}
+            onZoomIn={zoomIntoCluster}
+          />
+        ),
+      )}
+    </>
+  );
+}
 
 function FacilityMarker({
   facility,
@@ -429,20 +723,56 @@ function FacilityMarker({
 }) {
   const icon = useMemo(() => getFacilityIcon(facility.type, selected), [facility.type, selected]);
   const eventHandlers = useMemo(
-    () => ({ click: () => onSelect?.(facility) }),
+    () => activationHandlers(() => onSelect?.(facility)),
     [facility, onSelect],
+  );
+  const markerRef = useAccessibleName(
+    `${facility.name}, ${FACILITY_TYPE_INFO[facility.type].label}`,
+    icon,
   );
 
   return (
     <Marker
+      ref={markerRef}
       position={[facility.latitude, facility.longitude]}
       icon={icon}
       zIndexOffset={selected ? 1000 : 0}
       eventHandlers={eventHandlers}
-      alt={`${facility.name}, ${TYPE_LABELS[facility.type]}`}
     >
       <Tooltip direction="top" className="mednet-tooltip" opacity={1}>
         {facility.name}
+      </Tooltip>
+    </Marker>
+  );
+}
+
+/** A count badge standing in for several nearby pins; a click zooms in on them. */
+function ClusterMarker({
+  center,
+  count,
+  onZoomIn,
+}: {
+  center: [number, number];
+  count: number;
+  onZoomIn: (center: [number, number]) => void;
+}) {
+  const icon = useMemo(() => getClusterIcon(count), [count]);
+  const eventHandlers = useMemo(
+    () => activationHandlers(() => onZoomIn(center)),
+    [center, onZoomIn],
+  );
+  const markerRef = useAccessibleName(`${count} facilities, zoom in to see them`, icon);
+
+  return (
+    <Marker
+      ref={markerRef}
+      position={center}
+      icon={icon}
+      zIndexOffset={500}
+      eventHandlers={eventHandlers}
+    >
+      <Tooltip direction="top" className="mednet-tooltip" opacity={1}>
+        {count} facilities · Zoom in to see them
       </Tooltip>
     </Marker>
   );
@@ -463,22 +793,6 @@ function MapClickHandler({ onMapClick }: { onMapClick: (coords: [number, number]
 /* -------------------------------------------------------------------------- */
 /*                                 Controller                                 */
 /* -------------------------------------------------------------------------- */
-
-/**
- * Shrinks padding that would leave less than {@link MIN_FREE_AREA} px of map,
- * so a small viewport (or one not yet laid out) never yields a NaN zoom.
- */
-function clampPadding(size: L.Point, padding: FocusPadding): FocusPadding {
-  const clampAxis = (total: number, start: number, end: number): [number, number] => {
-    const covered = start + end;
-    if (covered === 0 || total - covered >= MIN_FREE_AREA) return [start, end];
-    const scale = Math.max(0, total - MIN_FREE_AREA) / covered;
-    return [Math.floor(start * scale), Math.floor(end * scale)];
-  };
-  const [left, right] = clampAxis(size.x, padding.topLeft[0], padding.bottomRight[0]);
-  const [top, bottom] = clampAxis(size.y, padding.topLeft[1], padding.bottomRight[1]);
-  return { topLeft: [left, top], bottomRight: [right, bottom] };
-}
 
 /**
  * Lives inside the map so it can use `useMap()`. Flies to the selected
@@ -508,26 +822,13 @@ function MapController({
 
   // Latest measurer, read at flight time. Declared before the flight effects so
   // it is already current when they run; a new function alone never flies.
-  const paddingRef = useRef(getFocusPadding);
-  useEffect(() => {
-    paddingRef.current = getFocusPadding;
-  }, [getFocusPadding]);
+  const paddingRef = useLatestRef(getFocusPadding);
 
   const flyWithPadding = useCallback(
     (target: [number, number], minZoom: number) => {
-      const { topLeft, bottomRight } = clampPadding(
-        map.getSize(),
-        paddingRef.current?.() ?? NO_PADDING,
-      );
-      // A zero-size bounds plus `maxZoom` is how Leaflet centres a point with padding.
-      map.flyToBounds(L.latLngBounds(target, target), {
-        paddingTopLeft: topLeft,
-        paddingBottomRight: bottomRight,
-        maxZoom: Math.max(map.getZoom(), minZoom),
-        duration: 0.8,
-      });
+      flyToTarget(map, target, Math.max(map.getZoom(), minZoom), paddingRef.current);
     },
-    [map],
+    [map, paddingRef],
   );
 
   const selected = selectedFacilityId
@@ -547,16 +848,13 @@ function MapController({
 
   // Centre on the patient only when explicitly asked (a revision bump), not
   // whenever their coordinates change.
-  const userLocationRef = useRef(userLocation);
-  useEffect(() => {
-    userLocationRef.current = userLocation;
-  }, [userLocation]);
+  const userLocationRef = useLatestRef(userLocation);
   useEffect(() => {
     if (!userLocationRevision) return;
     const target = userLocationRef.current;
     if (!target) return;
     flyWithPadding(target, USER_ZOOM);
-  }, [flyWithPadding, userLocationRevision]);
+  }, [flyWithPadding, userLocationRef, userLocationRevision]);
 
   // Fit the whole route into the uncovered part of the map.
   useEffect(() => {
@@ -571,7 +869,7 @@ function MapController({
       paddingBottomRight: bottomRight,
       maxZoom: ROUTE_MAX_ZOOM,
     });
-  }, [map, activeRouteCoordinates]);
+  }, [map, paddingRef, activeRouteCoordinates]);
 
   const userIcon = useMemo(() => getUserIcon(), []);
 

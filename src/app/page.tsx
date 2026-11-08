@@ -7,7 +7,7 @@ import type { Hmo, PatientProfile } from '@/types/database';
 // The title comes from the root layout; only the description is page-specific.
 export const metadata: Metadata = {
   description:
-    'Find verified hospitals, clinics, pharmacies and labs in Abuja that accept your HMO plan.',
+    'Find hospitals, clinics, pharmacies, labs, dental and eye clinics and specialist centres in Abuja that accept your HMO plan.',
 };
 
 /**

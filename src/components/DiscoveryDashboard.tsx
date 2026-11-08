@@ -51,10 +51,12 @@ import {
   HmoCompatibility,
   SpecialtyPills,
   TYPE_META,
+  VerificationBadge,
   formatDistance,
 } from '@/components/FacilityCard';
 import type { FocusPadding } from '@/components/FacilityMap';
 import FilterBar, { EMPTY_FILTERS } from '@/components/FilterBar';
+import MapLegend from '@/components/MapLegend';
 import WelcomeSplash from '@/components/WelcomeSplash';
 import { clearSavedCoverage, useSavedCoverage, type SavedCoverage } from '@/lib/coverage';
 import {
@@ -65,13 +67,14 @@ import {
   useDirections,
 } from '@/lib/directions';
 import {
+  FACILITY_TYPE_INFO,
   filterFacilities,
   findHmoMatch,
   type FacilityFilters,
   type FacilityWithHMO,
 } from '@/lib/facilities';
 import { haversineKm, type LatLng } from '@/lib/geolocation';
-import { DESKTOP_QUERY, useMediaQuery } from '@/lib/media';
+import { DESKTOP_QUERY, TALL_QUERY, useMediaQuery } from '@/lib/media';
 import {
   clearRecents,
   forgetFacility,
@@ -201,7 +204,7 @@ function filtersEqual(a: FacilityFilters, b: FacilityFilters): boolean {
 function describeFilters(filters: FacilityFilters, hmos: Hmo[]): string {
   const parts: string[] = [];
   const type = filters.facilityType ?? 'all';
-  if (type !== 'all') parts.push(`${TYPE_META[type].label}s`);
+  if (type !== 'all') parts.push(FACILITY_TYPE_INFO[type].plural);
   const hmoName = filters.hmoId ? hmos.find((hmo) => hmo.id === filters.hmoId)?.name : null;
   if (hmoName || filters.planTier) {
     parts.push([hmoName ?? 'Any HMO', filters.planTier ?? ''].filter(Boolean).join(' '));
@@ -250,12 +253,16 @@ export default function DiscoveryDashboard({
   const [selectedFacilityId, setSelectedFacilityId] = useState<string | null>(null);
   /** Desktop sidebar visibility. */
   const [drawerOpen, setDrawerOpen] = useState(true);
+  /** The map legend, once the patient has toggled it; `null` follows the screen size. */
+  const [legendPreference, setLegendPreference] = useState<boolean | null>(null);
   /** Phone bottom sheet; `null` shows the full map. */
   const [sheet, setSheet] = useState<MobileSheet | null>(null);
   /** Open sheet size, so the zoom buttons can sit above it or step aside. */
   const [sheetMetrics, setSheetMetrics] = useState({ height: 0, roomForControls: true });
   // Server rendering assumes a wide screen; phones switch to sheets once hydrated.
   const isDesktop = useMediaQuery(DESKTOP_QUERY, true);
+  // A short, wide viewport (landscape phone, small window) has no room for the open legend.
+  const tallEnough = useMediaQuery(TALL_QUERY, true);
   const [signingOut, setSigningOut] = useState(false);
   const [notice, setNotice] = useState<Notice>(null);
 
@@ -334,6 +341,9 @@ export default function DiscoveryDashboard({
         : 'results';
   const activeTab: MobileTab =
     sheet === null ? 'map' : sheet === 'recents' ? 'recents' : sheet === 'account' ? 'profile' : 'search';
+  // The legend starts open where there is room for it (wide and tall screens)
+  // and collapsed elsewhere, until the patient toggles it.
+  const legendOpen = legendPreference ?? (isDesktop && tallEnough);
 
   const profileHmo = profile?.hmo_id
     ? (hmos.find((hmo) => hmo.id === profile.hmo_id) ?? null)
@@ -670,14 +680,14 @@ export default function DiscoveryDashboard({
   const listPanel = isIdle ? (
     <div>
       <DrawerHeading
-        title="Verified in Abuja"
+        title="Facilities in Abuja"
         count={visibleFacilities.length}
         subtitle={
           activeHmo
             ? `Matching your ${activeHmo.name}${filters.planTier ? ` ${filters.planTier}` : ''} plan`
             : userLocation
               ? 'Sorted by distance from you'
-              : 'All verified facilities, A to Z'
+              : 'All listed facilities, A to Z'
         }
       />
       {facilityList}
@@ -786,7 +796,7 @@ export default function DiscoveryDashboard({
               label: directionsPanel ? 'Directions' : detailsPanel ? 'Facility details' : 'Facilities',
               content: placePanel,
             }
-          : { label: isIdle ? 'Verified facilities' : 'Search results', content: listPanel };
+          : { label: isIdle ? 'All facilities' : 'Search results', content: listPanel };
 
   const sheetOpen = !isDesktop && sheet !== null;
 
@@ -897,6 +907,20 @@ export default function DiscoveryDashboard({
             <span className="sr-only">Zoom out</span>
           </button>
         </div>
+      )}
+
+      {/* Bottom-left: the pin legend, above the OpenStreetMap credit. Wider
+          screens: beside the sidebar while it is open. Hidden while a phone
+          sheet or a notice is up, since both take that corner. */}
+      {!sheetOpen && !notice && (
+        <MapLegend
+          open={legendOpen}
+          followsScreen={legendPreference === null}
+          onToggle={() => setLegendPreference(!legendOpen)}
+          className={`absolute bottom-24 left-4 z-[1000] md:bottom-8 ${
+            isDesktop && drawerOpen ? 'md:left-[calc(400px+2rem)]' : ''
+          }`}
+        />
       )}
 
       {/* Toast: above the nav bar on phones, above any sheet by z-order */}
@@ -1093,7 +1117,7 @@ function FacilityList({
           <p className="font-semibold text-slate-800 dark:text-slate-100">No facilities match</p>
           <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
             Try a different plan, facility type or area, or reset the filters to browse every
-            verified facility in Abuja.
+            listed facility in Abuja.
           </p>
         </div>
         <button
@@ -1192,6 +1216,7 @@ function FacilityRow({
         <SpecialtyPills specialties={facility.specialties} className="mt-1" />
 
         <p className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px]">
+          {!facility.is_verified && <VerificationBadge verified={false} size="xs" />}
           {facility.is_open_24_7 && <MiniBadge tone="teal">Open 24/7</MiniBadge>}
           {facility.has_emergency_services && <MiniBadge tone="red">Emergency</MiniBadge>}
           {match ? (
@@ -1284,6 +1309,7 @@ function PlaceDetails({
   const website = facility.website?.trim() || null;
   const email = facility.email?.trim() || null;
   const specialties = (facility.specialties ?? []).map((item) => item.trim()).filter(Boolean);
+  const services = (facility.services ?? []).map((item) => item.trim()).filter(Boolean);
 
   return (
     <article className="pb-4">
@@ -1305,15 +1331,7 @@ function PlaceDetails({
         <header>
           <h2 className="flex flex-wrap items-center gap-x-2 gap-y-1 text-lg font-semibold leading-snug text-slate-900 dark:text-slate-100">
             {facility.name}
-            {facility.is_verified && (
-              <span
-                className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700 ring-1 ring-inset ring-emerald-600/20 dark:bg-emerald-500/10 dark:text-emerald-300 dark:ring-emerald-400/30"
-                title="Verified by MedNet"
-              >
-                <BadgeCheck className="h-3.5 w-3.5" aria-hidden="true" />
-                Verified
-              </span>
-            )}
+            <VerificationBadge verified={facility.is_verified} />
           </h2>
           <p className="mt-1.5 flex flex-wrap items-center gap-2 text-xs">
             <span
@@ -1329,6 +1347,13 @@ function PlaceDetails({
             )}
           </p>
         </header>
+
+        {!facility.is_verified && (
+          <p className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs leading-relaxed text-slate-600 dark:border-slate-700 dark:bg-slate-800/60 dark:text-slate-300">
+            MedNet has not confirmed this listing yet. Call the facility to check hours, services
+            and plans before visiting.
+          </p>
+        )}
 
         {/* Actions */}
         <div className="flex flex-wrap gap-2">
@@ -1428,7 +1453,7 @@ function PlaceDetails({
 
         {/* Specialties (all of them) and services */}
         {specialties.length > 0 && <TagList title="Specialties" items={specialties} />}
-        {facility.services.length > 0 && <TagList title="Services" items={facility.services} />}
+        {services.length > 0 && <TagList title="Services" items={services} />}
 
         {facility.description && (
           <section>

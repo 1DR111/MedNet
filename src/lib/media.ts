@@ -14,6 +14,12 @@ import { useCallback, useSyncExternalStore } from 'react';
 export const DESKTOP_QUERY = '(min-width: 48rem)';
 
 /**
+ * Viewports tall enough for the open map legend to clear the search box and
+ * chips. Mirrors the `tall` custom variant in globals.css.
+ */
+export const TALL_QUERY = '(min-height: 36rem)';
+
+/**
  * Whether `query` currently matches. During server rendering and hydration it
  * reports `serverFallback`, then switches to the real value on the client.
  */

@@ -11,8 +11,19 @@
 /*                                Enumerations                                */
 /* -------------------------------------------------------------------------- */
 
-/** The kind of healthcare facility. */
-export type FacilityType = 'hospital' | 'clinic' | 'pharmacy' | 'laboratory';
+/**
+ * The kind of healthcare facility. The labels, colours and pin letters for
+ * each kind live in `FACILITY_TYPE_INFO` (`src/lib/facilities.ts`), which is
+ * typed against this union so the two cannot drift apart.
+ */
+export type FacilityType =
+  | 'hospital'
+  | 'clinic'
+  | 'pharmacy'
+  | 'laboratory'
+  | 'dental'
+  | 'eye'
+  | 'specialist';
 
 /**
  * Leadway Health plan names.

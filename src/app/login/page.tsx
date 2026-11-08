@@ -240,7 +240,7 @@ function LoginForm({
             </div>
             <h1 className="text-2xl font-semibold tracking-tight">MedNet</h1>
             <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">
-              Find trusted hospitals, clinics, pharmacies and labs near you.
+              Find trusted hospitals, clinics, pharmacies, labs and specialist care near you.
             </p>
           </div>
 

@@ -7,16 +7,19 @@ import {
   Check,
   ChevronDown,
   Clock,
+  Eye,
   FlaskConical,
+  HeartPulse,
   Menu,
   PanelLeftClose,
   Pill as PillIcon,
   Search,
   ShieldCheck,
+  Smile,
   Stethoscope,
   X,
 } from 'lucide-react';
-import type { FacilityFilters } from '@/lib/facilities';
+import { FACILITY_TYPES, FACILITY_TYPE_INFO, type FacilityFilters } from '@/lib/facilities';
 import { PLAN_TIER_GROUPS } from '@/lib/plans';
 import type { FacilityType, Hmo } from '@/types/database';
 
@@ -53,14 +56,16 @@ export interface FilterBarProps {
   className?: string;
 }
 
-type TypeOption = { value: FacilityType; label: string; icon: typeof Building2 };
-
-const TYPE_OPTIONS: readonly TypeOption[] = [
-  { value: 'hospital', label: 'Hospitals', icon: Building2 },
-  { value: 'clinic', label: 'Clinics', icon: Stethoscope },
-  { value: 'pharmacy', label: 'Pharmacies', icon: PillIcon },
-  { value: 'laboratory', label: 'Labs', icon: FlaskConical },
-];
+/** One chip per category, labelled from the shared table. */
+const TYPE_ICONS: Record<FacilityType, typeof Building2> = {
+  hospital: Building2,
+  clinic: Stethoscope,
+  pharmacy: PillIcon,
+  laboratory: FlaskConical,
+  dental: Smile,
+  eye: Eye,
+  specialist: HeartPulse,
+};
 
 /** Filters with every dimension switched off; used by "Clear all". */
 export const EMPTY_FILTERS: FacilityFilters = {
@@ -276,7 +281,7 @@ export default function FilterBar({
           type="search"
           value={searchQuery}
           onChange={(event) => update({ searchQuery: event.target.value })}
-          placeholder="Search hospitals, specialties (e.g. Pediatrics), areas..."
+          placeholder="Search facilities, specialties, services or areas..."
           autoComplete="off"
           enterKeyHint="search"
           className="h-full min-w-0 flex-1 bg-transparent px-1 text-base text-slate-900 placeholder:text-slate-400 focus:outline-none md:text-sm dark:text-slate-100 dark:placeholder:text-slate-500 [&::-webkit-search-cancel-button]:hidden"
@@ -317,17 +322,17 @@ export default function FilterBar({
           aria-label="Quick filters"
           className={`pointer-events-auto flex w-full gap-2 overflow-x-auto py-1.5 pr-4 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden md:pointer-events-none md:w-auto md:flex-wrap md:overflow-visible md:pr-0 md:[mask-image:none] ${stripMask}`}
         >
-          {TYPE_OPTIONS.map((option) => {
-            const Icon = option.icon;
-            const active = facilityType === option.value;
+          {FACILITY_TYPES.map((type) => {
+            const Icon = TYPE_ICONS[type];
+            const active = facilityType === type;
             return (
               <Chip
-                key={option.value}
+                key={type}
                 active={active}
-                onClick={() => update({ facilityType: active ? 'all' : option.value })}
+                onClick={() => update({ facilityType: active ? 'all' : type })}
                 icon={<Icon className="h-4 w-4" aria-hidden="true" />}
               >
-                {option.label}
+                {FACILITY_TYPE_INFO[type].plural}
               </Chip>
             );
           })}

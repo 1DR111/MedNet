@@ -5,17 +5,26 @@ import {
   Ambulance,
   BadgeCheck,
   Building2,
+  CircleDashed,
   Clock,
+  Eye,
   FlaskConical,
+  HeartPulse,
   MapPin,
   Navigation,
   Phone,
   Pill,
   ShieldAlert,
   ShieldCheck,
+  Smile,
   Stethoscope,
 } from 'lucide-react';
-import { ALL_TIERS_WILDCARD, findHmoMatch, type FacilityWithHMO } from '@/lib/facilities';
+import {
+  ALL_TIERS_WILDCARD,
+  FACILITY_TYPE_INFO,
+  findHmoMatch,
+  type FacilityWithHMO,
+} from '@/lib/facilities';
 import type { FacilityType } from '@/types/database';
 
 export interface FacilityCardProps {
@@ -33,27 +42,46 @@ export interface FacilityCardProps {
   className?: string;
 }
 
-/** Label, icon and pill colours per facility type; shared with the discovery drawer. */
+/**
+ * Label, icon and badge colours per facility type; shared with the discovery
+ * drawer. Each badge uses the hue of that type's map pin, so a listing and
+ * its pin read as the same thing.
+ */
 export const TYPE_META: Record<FacilityType, { label: string; icon: typeof Building2; pill: string }> = {
   hospital: {
-    label: 'Hospital',
+    label: FACILITY_TYPE_INFO.hospital.label,
     icon: Building2,
-    pill: 'bg-teal-50 text-teal-700 ring-teal-600/20 dark:bg-teal-500/10 dark:text-teal-300 dark:ring-teal-400/30',
+    pill: 'bg-emerald-50 text-emerald-700 ring-emerald-600/20 dark:bg-emerald-500/10 dark:text-emerald-300 dark:ring-emerald-400/30',
   },
   clinic: {
-    label: 'Clinic',
+    label: FACILITY_TYPE_INFO.clinic.label,
     icon: Stethoscope,
-    pill: 'bg-sky-50 text-sky-700 ring-sky-600/20 dark:bg-sky-500/10 dark:text-sky-300 dark:ring-sky-400/30',
+    pill: 'bg-teal-50 text-teal-700 ring-teal-600/20 dark:bg-teal-500/10 dark:text-teal-300 dark:ring-teal-400/30',
   },
   pharmacy: {
-    label: 'Pharmacy',
+    label: FACILITY_TYPE_INFO.pharmacy.label,
     icon: Pill,
     pill: 'bg-violet-50 text-violet-700 ring-violet-600/20 dark:bg-violet-500/10 dark:text-violet-300 dark:ring-violet-400/30',
   },
   laboratory: {
-    label: 'Laboratory',
+    label: FACILITY_TYPE_INFO.laboratory.label,
     icon: FlaskConical,
     pill: 'bg-amber-50 text-amber-700 ring-amber-600/20 dark:bg-amber-500/10 dark:text-amber-300 dark:ring-amber-400/30',
+  },
+  dental: {
+    label: FACILITY_TYPE_INFO.dental.label,
+    icon: Smile,
+    pill: 'bg-sky-50 text-sky-700 ring-sky-600/20 dark:bg-sky-500/10 dark:text-sky-300 dark:ring-sky-400/30',
+  },
+  eye: {
+    label: FACILITY_TYPE_INFO.eye.label,
+    icon: Eye,
+    pill: 'bg-indigo-50 text-indigo-700 ring-indigo-600/20 dark:bg-indigo-500/10 dark:text-indigo-300 dark:ring-indigo-400/30',
+  },
+  specialist: {
+    label: FACILITY_TYPE_INFO.specialist.label,
+    icon: HeartPulse,
+    pill: 'bg-rose-50 text-rose-700 ring-rose-600/20 dark:bg-rose-500/10 dark:text-rose-300 dark:ring-rose-400/30',
   },
 };
 
@@ -114,15 +142,7 @@ export default function FacilityCard({
                 {facility.name}
               </h3>
             )}
-            {facility.is_verified && (
-              <span
-                className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700 ring-1 ring-inset ring-emerald-600/20 dark:bg-emerald-500/10 dark:text-emerald-300 dark:ring-emerald-400/30"
-                title="Verified by MedNet"
-              >
-                <BadgeCheck className="h-3.5 w-3.5" aria-hidden="true" />
-                Verified
-              </span>
-            )}
+            <VerificationBadge verified={facility.is_verified} />
           </div>
 
           <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs">
@@ -206,6 +226,51 @@ export default function FacilityCard({
 /* -------------------------------------------------------------------------- */
 /*                                 Sub-components                             */
 /* -------------------------------------------------------------------------- */
+
+const VERIFIED_BADGE =
+  'bg-emerald-50 text-emerald-700 ring-emerald-600/20 dark:bg-emerald-500/10 dark:text-emerald-300 dark:ring-emerald-400/30';
+const UNCONFIRMED_BADGE =
+  'bg-slate-100 text-slate-600 ring-slate-500/20 dark:bg-slate-800 dark:text-slate-300 dark:ring-slate-500/30';
+
+/**
+ * Whether MedNet has confirmed a listing: a green "Verified" badge, or a
+ * neutral "Unconfirmed" one that tells patients to call ahead. `xs` is the
+ * compact size for list rows.
+ */
+export function VerificationBadge({
+  verified,
+  size = 'sm',
+  className = '',
+}: {
+  verified: boolean;
+  size?: 'sm' | 'xs';
+  className?: string;
+}) {
+  const sizing = size === 'xs' ? 'px-1.5 py-0.5 text-[11px]' : 'px-2 py-0.5 text-xs';
+  const iconSize = size === 'xs' ? 'h-3 w-3' : 'h-3.5 w-3.5';
+  return verified ? (
+    <span
+      className={`inline-flex items-center gap-1 rounded-md font-medium ring-1 ring-inset ${sizing} ${VERIFIED_BADGE} ${className}`}
+      title="Verified by MedNet"
+    >
+      <BadgeCheck className={iconSize} aria-hidden="true" />
+      Verified
+    </span>
+  ) : (
+    <span
+      className={`inline-flex items-center gap-1 rounded-md font-medium ring-1 ring-inset ${sizing} ${UNCONFIRMED_BADGE} ${className}`}
+      title="MedNet has not confirmed this listing yet. Call the facility to check hours, services and plans before visiting."
+    >
+      <CircleDashed className={iconSize} aria-hidden="true" />
+      Unconfirmed · Call to verify
+      {/* The tooltip never reaches touch or screen-reader users; say it to them here. */}
+      <span className="sr-only">
+        . MedNet has not confirmed this listing yet. Call the facility to check hours, services
+        and plans before visiting.
+      </span>
+    </span>
+  );
+}
 
 /** Coverage panel: match for the active plan, or the facility's accepted plans. */
 export function HmoCompatibility({

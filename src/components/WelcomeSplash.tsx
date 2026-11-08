@@ -22,7 +22,7 @@ const VALUE_POINTS = [
   {
     icon: Building2,
     title: 'Verified Abuja facilities',
-    text: 'Hospitals, clinics, pharmacies and labs with listed hours, services and contact details. Verified listings are marked.',
+    text: 'Hospitals, clinics, pharmacies, labs, dental and eye clinics and specialist centres with listed hours, services and contact details. Verified listings are marked.',
   },
   {
     icon: Navigation,
@@ -60,10 +60,10 @@ export default function WelcomeSplash({ onBrowseAsGuest }: WelcomeSplashProps) {
             id="welcome-title"
             className="mt-6 text-2xl font-semibold leading-snug tracking-tight sm:text-[1.75rem]"
           >
-            Find hospitals, clinics, pharmacies, and labs that accept your HMO.
+            Find hospitals, clinics, pharmacies, labs and specialist care in Abuja that accept your HMO.
           </h1>
           <p className="mt-3 text-sm leading-relaxed text-slate-600 dark:text-slate-300">
-            Search verified healthcare facilities across Abuja, filter by your exact HMO plan tier,
+            Search healthcare facilities across Abuja, filter by your exact HMO plan tier,
             and get directions.
           </p>
 

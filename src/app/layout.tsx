@@ -17,7 +17,7 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "MedNet | Abuja Healthcare & HMO Directory",
   description:
-    "Find hospitals, clinics, pharmacies and laboratories in Abuja, see which Leadway Health plans each one accepts, check listed hours and get directions.",
+    "Find hospitals, clinics, pharmacies, laboratories, dental and eye clinics and specialist centres in Abuja, see which Leadway Health plans each one accepts, check listed hours and get directions.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

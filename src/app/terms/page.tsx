@@ -5,7 +5,7 @@ import LegalPage, { LegalContact, LegalSection } from '@/components/LegalPage';
 export const metadata: Metadata = {
   title: 'Terms & Conditions | MedNet',
   description:
-    'The terms and conditions that apply when you use MedNet, an independent directory of hospitals, clinics, pharmacies and laboratories in Abuja, Nigeria.',
+    'The terms and conditions that apply when you use MedNet, an independent directory of hospitals, clinics, pharmacies, laboratories, dental and eye clinics and specialist centres in Abuja, Nigeria.',
 };
 
 export default function TermsPage() {
@@ -16,8 +16,9 @@ export default function TermsPage() {
     >
       <LegalSection title="1. What MedNet is">
         <p>
-          MedNet is an independent online directory of hospitals, clinics, pharmacies and
-          laboratories in Abuja, Federal Capital Territory, Nigeria. It helps you find a facility,
+          MedNet is an independent online directory of hospitals, clinics, pharmacies,
+          laboratories, dental and eye clinics and specialist centres in Abuja, Federal Capital
+          Territory, Nigeria. It helps you find a facility,
           see which HMO plans the facility has told us it accepts, check its listed hours and get
           directions.
         </p>
