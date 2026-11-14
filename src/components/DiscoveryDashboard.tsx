@@ -48,12 +48,12 @@ import BottomNav, { BOTTOM_NAV_HEIGHT, type MobileTab } from '@/components/Botto
 import BottomSheet from '@/components/BottomSheet';
 import DirectionsPanel from '@/components/DirectionsPanel';
 import {
-  HmoCompatibility,
   SpecialtyPills,
   TYPE_META,
   VerificationBadge,
   formatDistance,
 } from '@/components/FacilityCard';
+import HmoNetwork from '@/components/HmoNetwork';
 import type { FocusPadding } from '@/components/FacilityMap';
 import FilterBar, { EMPTY_FILTERS } from '@/components/FilterBar';
 import MapLegend from '@/components/MapLegend';
@@ -68,8 +68,10 @@ import {
 } from '@/lib/directions';
 import {
   FACILITY_TYPE_INFO,
+  describeCoverage,
   filterFacilities,
   findHmoMatch,
+  shortHmoName,
   type FacilityFilters,
   type FacilityWithHMO,
 } from '@/lib/facilities';
@@ -351,6 +353,16 @@ export default function DiscoveryDashboard({
   const activeHmo = filters.hmoId ? (hmos.find((hmo) => hmo.id === filters.hmoId) ?? null) : null;
   const savedHmoName = savedCoverage
     ? (hmos.find((hmo) => hmo.id === savedCoverage.hmoId)?.name ?? 'your HMO')
+    : null;
+  // The plan the list rows and the details view check each facility against:
+  // the active HMO filter, else the patient's saved plan.
+  const detailCoverage = filters.hmoId
+    ? { hmoId: filters.hmoId, planTier: filters.planTier ?? null }
+    : savedCoverage
+      ? { hmoId: savedCoverage.hmoId, planTier: savedCoverage.planTier }
+      : null;
+  const detailHmoName = detailCoverage
+    ? (hmos.find((hmo) => hmo.id === detailCoverage.hmoId)?.name ?? null)
     : null;
 
   // Map overlays for directions: a chosen starting point (other than the
@@ -669,7 +681,8 @@ export default function DiscoveryDashboard({
   const facilityList = (
     <FacilityList
       facilities={visibleFacilities}
-      filters={filters}
+      coverage={detailCoverage}
+      coverageHmoName={detailHmoName}
       selectedFacilityId={selectedFacilityId}
       onSelect={selectFacility}
       onStartDirections={startDirections}
@@ -749,8 +762,8 @@ export default function DiscoveryDashboard({
   const detailsPanel = selectedFacility ? (
     <PlaceDetails
       facility={selectedFacility}
-      activeHmoId={filters.hmoId}
-      activePlanTier={filters.planTier}
+      hmos={hmos}
+      coverage={detailCoverage}
       onBack={() => {
         setSelectedFacilityId(null);
         setSheet('results');
@@ -835,6 +848,7 @@ export default function DiscoveryDashboard({
               ? {
                   hmoId: savedCoverage.hmoId,
                   planTier: savedCoverage.planTier,
+                  hmoName: savedHmoName ?? 'your HMO',
                   label: `${savedHmoName}${savedCoverage.planTier ? ` ${savedCoverage.planTier}` : ''}`,
                 }
               : null
@@ -1094,14 +1108,17 @@ function RecentsSection({
 
 function FacilityList({
   facilities,
-  filters,
+  coverage,
+  coverageHmoName,
   selectedFacilityId,
   onSelect,
   onStartDirections,
   onReset,
 }: {
   facilities: FacilityWithHMO[];
-  filters: FacilityFilters;
+  /** The patient's active or saved plan, for the coverage badge on each row. */
+  coverage: { hmoId: string; planTier: string | null } | null;
+  coverageHmoName: string | null;
   selectedFacilityId: string | null;
   onSelect: (facility: FacilityWithHMO) => void;
   onStartDirections: (facility: FacilityWithHMO) => void;
@@ -1138,8 +1155,9 @@ function FacilityList({
         <li key={facility.id} id={`facility-${facility.id}`}>
           <FacilityRow
             facility={facility}
-            activeHmoId={filters.hmoId}
-            activePlanTier={filters.planTier}
+            activeHmoId={coverage?.hmoId}
+            activeHmoName={coverageHmoName}
+            activePlanTier={coverage?.planTier}
             selected={facility.id === selectedFacilityId}
             onSelect={onSelect}
             onStartDirections={onStartDirections}
@@ -1153,6 +1171,7 @@ function FacilityList({
 function FacilityRow({
   facility,
   activeHmoId,
+  activeHmoName,
   activePlanTier,
   selected,
   onSelect,
@@ -1160,6 +1179,7 @@ function FacilityRow({
 }: {
   facility: FacilityWithHMO;
   activeHmoId?: string | null;
+  activeHmoName?: string | null;
   activePlanTier?: string | null;
   selected: boolean;
   onSelect: (facility: FacilityWithHMO) => void;
@@ -1167,8 +1187,13 @@ function FacilityRow({
 }) {
   const meta = TYPE_META[facility.type];
   const Icon = meta.icon;
-  const hasActiveCoverage = Boolean(activeHmoId?.trim() || activePlanTier?.trim());
-  const match = hasActiveCoverage ? findHmoMatch(facility, activeHmoId, activePlanTier) : null;
+  const hmoId = activeHmoId?.trim() ?? '';
+  const planTier = activePlanTier?.trim() ?? '';
+  // With an HMO chosen: covered, other tiers only, or not in the network. A
+  // plan filter alone matches any HMO that accepts a plan by that name.
+  const status = hmoId ? describeCoverage(facility, hmoId, planTier) : null;
+  const tierMatch = !hmoId && planTier ? findHmoMatch(facility, null, planTier) : null;
+  const hmoLabel = activeHmoName?.trim() ? shortHmoName(activeHmoName) : 'your HMO';
   const listedHmos = facility.facility_hmos.filter((row) => row.hmos).length;
 
   return (
@@ -1219,19 +1244,37 @@ function FacilityRow({
           {!facility.is_verified && <VerificationBadge verified={false} size="xs" />}
           {facility.is_open_24_7 && <MiniBadge tone="teal">Open 24/7</MiniBadge>}
           {facility.has_emergency_services && <MiniBadge tone="red">Emergency</MiniBadge>}
-          {match ? (
+          {status?.kind === 'covered' ? (
             <MiniBadge tone="emerald">
               <ShieldCheck className="h-3 w-3" aria-hidden="true" />
-              Accepts {match.hmos?.name ?? 'your plan'}
+              Accepts {hmoLabel}
+              {planTier ? ` (${planTier})` : ''}
             </MiniBadge>
-          ) : hasActiveCoverage ? (
+          ) : status?.kind === 'other-tiers' ? (
+            <MiniBadge tone="amber">
+              <ShieldAlert className="h-3 w-3" aria-hidden="true" />
+              {hmoLabel}: other tiers only
+            </MiniBadge>
+          ) : status?.kind === 'not-in-network' ? (
+            <MiniBadge tone="slate">
+              <Wallet className="h-3 w-3" aria-hidden="true" />
+              Not in {hmoLabel} network
+            </MiniBadge>
+          ) : tierMatch ? (
+            <MiniBadge tone="emerald">
+              <ShieldCheck className="h-3 w-3" aria-hidden="true" />
+              Accepts {tierMatch.hmos?.name ?? 'your plan'}
+            </MiniBadge>
+          ) : planTier ? (
             <MiniBadge tone="amber">
               <ShieldAlert className="h-3 w-3" aria-hidden="true" />
               Not listed for your plan
             </MiniBadge>
           ) : (
             <span className="text-slate-500 dark:text-slate-400">
-              {listedHmos > 0 ? `${listedHmos} HMO${listedHmos === 1 ? '' : 's'} accepted` : 'Direct payment only'}
+              {listedHmos > 0
+                ? `${listedHmos} HMO${listedHmos === 1 ? '' : 's'} accepted`
+                : 'Self-Pay / Restricted Corporate Only'}
             </span>
           )}
         </p>
@@ -1257,7 +1300,7 @@ function MiniBadge({
   tone,
   children,
 }: {
-  tone: 'teal' | 'red' | 'emerald' | 'amber';
+  tone: 'teal' | 'red' | 'emerald' | 'amber' | 'slate';
   children: ReactNode;
 }) {
   const tones = {
@@ -1267,6 +1310,8 @@ function MiniBadge({
       'bg-emerald-50 text-emerald-700 ring-emerald-600/20 dark:bg-emerald-500/10 dark:text-emerald-300 dark:ring-emerald-400/30',
     amber:
       'bg-amber-50 text-amber-700 ring-amber-600/20 dark:bg-amber-500/10 dark:text-amber-300 dark:ring-amber-400/30',
+    slate:
+      'bg-slate-100 text-slate-600 ring-slate-500/20 dark:bg-slate-800 dark:text-slate-300 dark:ring-slate-500/30',
   } as const;
   return (
     <span
@@ -1286,15 +1331,17 @@ const SECONDARY_ACTION =
 
 function PlaceDetails({
   facility,
-  activeHmoId,
-  activePlanTier,
+  hmos,
+  coverage,
   onBack,
   onStartDirections,
   handoffOrigin,
 }: {
   facility: FacilityWithHMO;
-  activeHmoId?: string | null;
-  activePlanTier?: string | null;
+  /** Every HMO with its plan catalog, for the tier breakdown. */
+  hmos: Hmo[];
+  /** The patient's active or saved plan to check this facility against. */
+  coverage: { hmoId: string; planTier: string | null } | null;
   onBack: () => void;
   onStartDirections: (facility: FacilityWithHMO) => void;
   /** Starting point to pre-fill in the Google Maps hand-off, when known. */
@@ -1303,8 +1350,6 @@ function PlaceDetails({
   const meta = TYPE_META[facility.type];
   const googleMapsUrl = googleMapsDirectionsUrl([facility.latitude, facility.longitude], handoffOrigin);
   const Icon = meta.icon;
-  const hasActiveCoverage = Boolean(activeHmoId?.trim() || activePlanTier?.trim());
-  const match = hasActiveCoverage ? findHmoMatch(facility, activeHmoId, activePlanTier) : null;
   const phoneHref = facility.phone ? `tel:${facility.phone.replace(/[^\d+]/g, '')}` : null;
   const website = facility.website?.trim() || null;
   const email = facility.email?.trim() || null;
@@ -1394,9 +1439,9 @@ function PlaceDetails({
           <span className="sr-only"> for {facility.name} (opens in a new tab)</span>
         </a>
 
-        {/* Leadway Health plan compatibility */}
+        {/* HMO network: the patient's standing here, then every accepted plan */}
         <section aria-label="HMO plan compatibility">
-          <HmoCompatibility facility={facility} hasActiveCoverage={hasActiveCoverage} match={match} />
+          <HmoNetwork facility={facility} hmos={hmos} coverage={coverage} />
         </section>
 
         {/* Facts */}

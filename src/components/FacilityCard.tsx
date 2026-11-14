@@ -18,10 +18,12 @@ import {
   ShieldCheck,
   Smile,
   Stethoscope,
+  Wallet,
 } from 'lucide-react';
 import {
   ALL_TIERS_WILDCARD,
   FACILITY_TYPE_INFO,
+  describeCoverage,
   findHmoMatch,
   type FacilityWithHMO,
 } from '@/lib/facilities';
@@ -31,6 +33,8 @@ export interface FacilityCardProps {
   facility: FacilityWithHMO;
   /** The patient's HMO, when an HMO filter or profile preference is active. */
   activeHmoId?: string | null;
+  /** Display name of that HMO, for the coverage badges. */
+  activeHmoName?: string | null;
   /** The patient's plan name, when a plan filter or profile preference is active. */
   activePlanTier?: string | null;
   /** Highlights the card, e.g. when its marker is focused on the map. */
@@ -88,6 +92,7 @@ export const TYPE_META: Record<FacilityType, { label: string; icon: typeof Build
 export default function FacilityCard({
   facility,
   activeHmoId = null,
+  activeHmoName = null,
   activePlanTier = null,
   isSelected = false,
   onSelect,
@@ -96,9 +101,6 @@ export default function FacilityCard({
 }: FacilityCardProps) {
   const typeMeta = TYPE_META[facility.type];
   const TypeIcon = typeMeta.icon;
-
-  const hasActiveCoverage = Boolean(activeHmoId?.trim() || activePlanTier?.trim());
-  const match = hasActiveCoverage ? findHmoMatch(facility, activeHmoId, activePlanTier) : null;
 
   const phoneHref = facility.phone ? `tel:${facility.phone.replace(/[^\d+]/g, '')}` : null;
 
@@ -189,7 +191,12 @@ export default function FacilityCard({
       <SpecialtyPills specialties={facility.specialties} />
 
       {/* HMO compatibility */}
-      <HmoCompatibility facility={facility} hasActiveCoverage={hasActiveCoverage} match={match} />
+      <HmoCompatibility
+        facility={facility}
+        activeHmoId={activeHmoId}
+        activeHmoName={activeHmoName}
+        activePlanTier={activePlanTier}
+      />
 
       {/* Actions */}
       <footer className="mt-auto flex flex-wrap gap-2 pt-1">
@@ -272,29 +279,84 @@ export function VerificationBadge({
   );
 }
 
-/** Coverage panel: match for the active plan, or the facility's accepted plans. */
+const ACCEPTS_BADGE =
+  'inline-flex items-center gap-1 rounded-md bg-emerald-600 px-2 py-0.5 text-xs font-semibold text-white';
+const AMBER_NOTICE =
+  'flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2.5 text-sm text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-200';
+const SLATE_NOTICE =
+  'flex items-start gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-700 dark:border-slate-700 dark:bg-slate-800/60 dark:text-slate-200';
+
+/**
+ * Coverage panel. With an HMO filter active: an emerald "Accepts" badge, an
+ * amber notice when the facility takes that HMO only on other tiers, or a
+ * neutral notice when the HMO is not in its network. Then the facility's
+ * accepted plans, or self-pay when it lists none.
+ */
 export function HmoCompatibility({
   facility,
-  hasActiveCoverage,
-  match,
+  activeHmoId = null,
+  activeHmoName = null,
+  activePlanTier = null,
 }: {
   facility: FacilityWithHMO;
-  hasActiveCoverage: boolean;
-  match: ReturnType<typeof findHmoMatch>;
+  activeHmoId?: string | null;
+  activeHmoName?: string | null;
+  activePlanTier?: string | null;
 }) {
-  if (match) {
-    const hmoName = match.hmos?.name ?? 'your HMO';
-    const tiers = match.accepted_tiers.map((t) => t.trim());
+  const hmoId = activeHmoId?.trim() ?? '';
+  const planTier = activePlanTier?.trim() ?? '';
+  const status = hmoId ? describeCoverage(facility, hmoId, planTier) : null;
+  // A plan filter without an HMO: any HMO that accepts a plan by that name.
+  const tierMatch = !hmoId && planTier ? findHmoMatch(facility, null, planTier) : null;
+  const rowHmoName = status && status.kind !== 'not-in-network' ? status.row.hmos?.name : undefined;
+  const hmoName = activeHmoName?.trim() || rowHmoName || 'your HMO';
+  const acceptedRow = status?.kind === 'covered' ? status.row : tierMatch;
+
+  let notice: ReactNode = null;
+  if (acceptedRow) {
+    const name = status?.kind === 'covered' ? hmoName : (acceptedRow.hmos?.name ?? 'your HMO');
+    const tiers = acceptedRow.accepted_tiers.map((t) => t.trim()).filter(Boolean);
     const acceptsAll = tiers.includes(ALL_TIERS_WILDCARD);
-    return (
-      <div className="flex items-start gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-sm text-emerald-800 dark:border-emerald-900/60 dark:bg-emerald-950/40 dark:text-emerald-200">
-        <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
-        <p>
-          <span className="font-semibold">Accepts your {hmoName} plan.</span>{' '}
-          <span className="text-emerald-700 dark:text-emerald-300">
-            {acceptsAll ? 'All plans covered.' : `Covers ${formatList(tiers)}.`}
-          </span>
+    notice = (
+      <div className="space-y-1.5">
+        <span className={ACCEPTS_BADGE}>
+          <ShieldCheck className="h-3.5 w-3.5" aria-hidden="true" />
+          Accepts {name}
+          {planTier ? ` (${planTier})` : ''}
+        </span>
+        <p className="text-xs text-slate-500 dark:text-slate-400">
+          {acceptsAll ? 'All plans covered.' : `Covers ${formatList(tiers)}.`}
         </p>
+      </div>
+    );
+  } else if (status?.kind === 'other-tiers') {
+    notice = (
+      <div className={AMBER_NOTICE}>
+        <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" aria-hidden="true" />
+        <p>
+          <span className="font-semibold">
+            Accepts {hmoName}, but requires: {formatList(status.acceptedTiers)}.
+          </span>{' '}
+          {planTier ? `Your ${planTier} plan is not on that list.` : ''} Confirm with the facility
+          before visiting.
+        </p>
+      </div>
+    );
+  } else if (status?.kind === 'not-in-network') {
+    notice = (
+      <div className={SLATE_NOTICE}>
+        <Wallet className="mt-0.5 h-4 w-4 shrink-0 text-slate-500 dark:text-slate-400" aria-hidden="true" />
+        <p>
+          <span className="font-semibold">Not in your {hmoName} network</span> · Self-pay or special
+          retainership only
+        </p>
+      </div>
+    );
+  } else if (planTier) {
+    notice = (
+      <div className={AMBER_NOTICE}>
+        <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" aria-hidden="true" />
+        <p>Not listed for your {planTier} plan. Confirm coverage with the facility before visiting.</p>
       </div>
     );
   }
@@ -303,12 +365,7 @@ export function HmoCompatibility({
 
   return (
     <div className="space-y-2">
-      {hasActiveCoverage && (
-        <div className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2.5 text-sm text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-200">
-          <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" aria-hidden="true" />
-          <p>Not listed for your plan. Confirm coverage with the facility before visiting.</p>
-        </div>
-      )}
+      {notice}
 
       {listed.length > 0 ? (
         <div className="text-sm">
@@ -335,9 +392,10 @@ export function HmoCompatibility({
           </ul>
         </div>
       ) : (
-        !hasActiveCoverage && (
-          <p className="text-sm text-slate-500 dark:text-slate-400">
-            No HMO plans listed. Direct payment only.
+        !status && (
+          <p className="flex items-center gap-2 text-sm font-medium text-slate-600 dark:text-slate-300">
+            <Wallet className="h-4 w-4 shrink-0 text-slate-400 dark:text-slate-500" aria-hidden="true" />
+            Self-Pay / Restricted Corporate Only
           </p>
         )
       )}
@@ -419,7 +477,7 @@ export function formatDistance(km: number): string {
 }
 
 /** "Plus", "Plus and Pro", "Plus, Pro and Max". */
-function formatList(items: readonly string[]): string {
+export function formatList(items: readonly string[]): string {
   if (items.length <= 1) return items.join('');
   return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
 }

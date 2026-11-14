@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type { Facility, FacilityType, Hmo, PlanTier } from '@/types/database';
+import { FALLBACK_PLAN_DETAILS } from '@/lib/hmoCatalog';
+import type { Facility, FacilityType, Hmo, HmoPlanDetail, PlanTier } from '@/types/database';
 
 /* -------------------------------------------------------------------------- */
 /*                                    Types                                   */
@@ -11,8 +12,13 @@ export interface FacilityHmoJoin {
   hmo_id: string;
   /** Plans accepted for this HMO; may contain `'All'` as a wildcard. */
   accepted_tiers: PlanTier[];
-  /** The embedded HMO. `null` only if the referenced row is missing. */
-  hmos: Pick<Hmo, 'id' | 'name' | 'code'> | null;
+  /**
+   * The embedded HMO with its contact details but not `plan_details`: that
+   * catalog is loaded once through {@link getHmos} and looked up by `hmo_id`
+   * instead of travelling with every facility row. `null` only if the
+   * referenced row is missing.
+   */
+  hmos: Pick<Hmo, 'id' | 'name' | 'code' | 'logo_url' | 'description' | 'helpline' | 'website'> | null;
 }
 
 /** A facility with its accepted HMOs embedded. */
@@ -112,8 +118,35 @@ export interface FacilityFilters {
 /*                                  Fetching                                  */
 /* -------------------------------------------------------------------------- */
 
-/** Column list used for every facility query, so types and query stay in sync. */
-export const FACILITY_SELECT = '*, facility_hmos(hmo_id, accepted_tiers, hmos(id, name, code))';
+/** Every `hmos` column the app reads; HMO queries select this, ordered by name. */
+export const HMO_SELECT = 'id, name, code, logo_url, description, helpline, website, plan_details';
+
+/**
+ * Column list used for every facility query, so types and query stay in sync.
+ * The embedded HMO carries its contact details but not `plan_details`; see
+ * {@link FacilityHmoJoin.hmos}.
+ */
+export const FACILITY_SELECT =
+  '*, facility_hmos(hmo_id, accepted_tiers, hmos(id, name, code, logo_url, description, helpline, website))';
+
+/**
+ * Loads every HMO with its contact details and plan catalog, ordered by name.
+ * Works with either Supabase client. Throws if the query fails so callers can
+ * surface a single error path.
+ */
+export async function getHmos(supabase: SupabaseClient): Promise<Hmo[]> {
+  const { data, error } = await supabase
+    .from('hmos')
+    .select(HMO_SELECT)
+    .order('name', { ascending: true })
+    .overrideTypes<Hmo[], { merge: false }>();
+
+  if (error) {
+    throw new Error(`Could not load HMOs: ${error.message}`);
+  }
+
+  return data ?? [];
+}
 
 /**
  * Loads every facility with its accepted HMOs, ordered by name.
@@ -243,4 +276,98 @@ export function filterFacilities(
 
     return true;
   });
+}
+
+/* -------------------------------------------------------------------------- */
+/*                                  HMO plans                                 */
+/* -------------------------------------------------------------------------- */
+
+/** True for a `plan_details` entry with every field the UI reads. */
+export function isHmoPlanDetail(value: unknown): value is HmoPlanDetail {
+  if (typeof value !== 'object' || value === null) return false;
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate.name === 'string' &&
+    candidate.name.trim() !== '' &&
+    typeof candidate.category === 'string' &&
+    typeof candidate.summary === 'string' &&
+    typeof candidate.restrictions === 'string' &&
+    Array.isArray(candidate.benefits) &&
+    candidate.benefits.every((benefit) => typeof benefit === 'string')
+  );
+}
+
+/**
+ * The plans an HMO offers: its `plan_details` when the row has any, else the
+ * built-in catalog for its code (see `hmoCatalog.ts`). Malformed entries in
+ * the column are skipped rather than crashing a picker.
+ */
+export function getPlansForHmo(hmo: Hmo | undefined | null): HmoPlanDetail[] {
+  if (!hmo) return [];
+  const stored = Array.isArray(hmo.plan_details) ? hmo.plan_details.filter(isHmoPlanDetail) : [];
+  if (stored.length > 0) return stored;
+  return [...(FALLBACK_PLAN_DETAILS[hmo.code.trim().toUpperCase()] ?? [])];
+}
+
+/** Plans grouped by `category` in first-seen order, for `<optgroup>` pickers. */
+export function groupPlansByCategory(
+  plans: readonly HmoPlanDetail[],
+): { category: string; plans: HmoPlanDetail[] }[] {
+  const groups: { category: string; plans: HmoPlanDetail[] }[] = [];
+  for (const plan of plans) {
+    const category = plan.category.trim() || 'Plans';
+    const group = groups.find((entry) => entry.category === category);
+    if (group) group.plans.push(plan);
+    else groups.push({ category, plans: [plan] });
+  }
+  return groups;
+}
+
+/** The plan called `name` (trimmed, case-insensitive), if the HMO publishes one. */
+export function findPlan(
+  plans: readonly HmoPlanDetail[],
+  name: string | null | undefined,
+): HmoPlanDetail | null {
+  const wanted = normaliseTier(name).toLowerCase();
+  if (!wanted) return null;
+  return plans.find((plan) => plan.name.trim().toLowerCase() === wanted) ?? null;
+}
+
+/**
+ * "Leadway Health" reads as "Leadway" and "AVON HMO" as "AVON" where space is
+ * short, such as the My HMO chip. A bracketed suffix is dropped, and "Police
+ * HMO" keeps its last word because "Police" alone would not name an insurer.
+ */
+export function shortHmoName(name: string): string {
+  const trimmed = name.replace(/\s*\(.*\)\s*$/, '').trim();
+  const stripped = trimmed.replace(/\s+(Health|HMO)$/i, '').trim();
+  if (!stripped || /^police$/i.test(stripped)) return trimmed;
+  return stripped;
+}
+
+/** How a facility relates to one patient's HMO and plan. */
+export type CoverageStatus =
+  | { kind: 'covered'; row: FacilityHmoJoin }
+  | { kind: 'other-tiers'; row: FacilityHmoJoin; acceptedTiers: string[] }
+  | { kind: 'not-in-network' };
+
+/**
+ * Whether `facility` takes the patient's HMO and, when one is known, their
+ * exact plan: covered, accepted only on other tiers, or not in the network.
+ */
+export function describeCoverage(
+  facility: Pick<FacilityWithHMO, 'facility_hmos'>,
+  hmoId: string,
+  planTier: string | null | undefined,
+): CoverageStatus {
+  const wantedHmo = hmoId.trim();
+  const row = facility.facility_hmos.find((entry) => entry.hmo_id === wantedHmo);
+  if (!row) return { kind: 'not-in-network' };
+  const wanted = normaliseTier(planTier);
+  if (!wanted || tiersAcceptPlan(row.accepted_tiers, wanted)) return { kind: 'covered', row };
+  return {
+    kind: 'other-tiers',
+    row,
+    acceptedTiers: row.accepted_tiers.map((tier) => tier.trim()).filter(Boolean),
+  };
 }

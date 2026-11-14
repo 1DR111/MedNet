@@ -26,10 +26,11 @@ import {
   Sun,
   User,
 } from 'lucide-react';
+import PlanCoverageCard from '@/components/PlanCoverageCard';
 import { useTheme } from '@/components/ThemeProvider';
 import { CITIES, DEFAULT_CITY, isKnownCity } from '@/lib/cities';
 import { clearSavedCoverage, readSavedCoverage, writeSavedCoverage } from '@/lib/coverage';
-import { PLAN_TIER_GROUPS, isPatientPlanTier, type PatientPlanTier } from '@/lib/plans';
+import { findPlan, getHmos, getPlansForHmo, groupPlansByCategory } from '@/lib/facilities';
 import { dismissSplash } from '@/lib/splash';
 import { createClient } from '@/lib/supabase/client';
 import type { Theme } from '@/lib/theme';
@@ -71,7 +72,7 @@ export default function SettingsPage() {
   // HMO coverage form
   const [hasHmo, setHasHmo] = useState(false);
   const [hmoId, setHmoId] = useState('');
-  const [planTier, setPlanTier] = useState<PatientPlanTier | ''>('');
+  const [planTier, setPlanTier] = useState('');
   const [hmoSaving, setHmoSaving] = useState(false);
   const [hmoSaved, setHmoSaved] = useState(false);
   const [hmoError, setHmoError] = useState<string | null>(null);
@@ -97,12 +98,8 @@ export default function SettingsPage() {
       } = await supabase.auth.getUser();
       if (cancelled) return;
 
-      const [hmoResult, profileResult] = await Promise.all([
-        supabase
-          .from('hmos')
-          .select('id, name, code, logo_url, created_at')
-          .order('name', { ascending: true })
-          .overrideTypes<Hmo[], { merge: false }>(),
+      const [hmoList, profileResult] = await Promise.all([
+        getHmos(supabase),
         currentUser
           ? supabase
               .from('patient_profiles')
@@ -114,11 +111,6 @@ export default function SettingsPage() {
       ]);
       if (cancelled) return;
 
-      if (hmoResult.error) {
-        setLoadError(`We could not load the list of HMOs: ${hmoResult.error.message}`);
-        setStatus('error');
-        return;
-      }
       if (profileResult?.error) {
         setLoadError(`We could not load your profile: ${profileResult.error.message}`);
         setStatus('error');
@@ -126,7 +118,7 @@ export default function SettingsPage() {
       }
 
       setUser(currentUser ?? null);
-      setHmos(hmoResult.data ?? []);
+      setHmos(hmoList);
 
       const row = profileResult?.data ?? null;
       setProfile(row);
@@ -137,7 +129,9 @@ export default function SettingsPage() {
       if (coverage) {
         setHasHmo(coverage.has_hmo);
         setHmoId(coverage.hmo_id ?? '');
-        setPlanTier(isPatientPlanTier(coverage.hmo_plan_tier) ? coverage.hmo_plan_tier : '');
+        // Only a plan the chosen HMO publishes can be shown in the picker.
+        const savedHmo = hmoList.find((hmo) => hmo.id === coverage.hmo_id);
+        setPlanTier(findPlan(getPlansForHmo(savedHmo), coverage.hmo_plan_tier)?.name ?? '');
       }
       if (row) {
         setFullName(row.full_name);
@@ -173,6 +167,14 @@ export default function SettingsPage() {
       setHmoId('');
       setPlanTier('');
     }
+  }
+
+  /** A plan belongs to one insurer, so a new HMO starts from its first plan. */
+  function selectHmo(id: string) {
+    setHmoId(id);
+    setHmoSaved(false);
+    setHmoError(null);
+    setPlanTier(getPlansForHmo(hmos.find((hmo) => hmo.id === id))[0]?.name ?? '');
   }
 
   /** Full row for upsert: existing values carried forward, overrides applied. */
@@ -302,6 +304,8 @@ export default function SettingsPage() {
   /* --------------------------------- Render ------------------------------- */
 
   const selectedHmo = hmos.find((hmo) => hmo.id === hmoId) ?? null;
+  const plans = getPlansForHmo(selectedHmo);
+  const selectedPlan = findPlan(plans, planTier);
   const loading = status === 'loading';
 
   return (
@@ -422,10 +426,7 @@ export default function SettingsPage() {
                     label="Your HMO provider"
                     icon={<Building2 className="h-4 w-4" aria-hidden="true" />}
                     value={hmoId}
-                    onChange={(value) => {
-                      setHmoId(value);
-                      setHmoSaved(false);
-                    }}
+                    onChange={selectHmo}
                     required
                   >
                     <option value="" disabled>
@@ -445,24 +446,29 @@ export default function SettingsPage() {
                     icon={<BadgeCheck className="h-4 w-4" aria-hidden="true" />}
                     value={planTier}
                     onChange={(value) => {
-                      setPlanTier(isPatientPlanTier(value) ? value : '');
+                      setPlanTier(findPlan(plans, value)?.name ?? '');
                       setHmoSaved(false);
                     }}
+                    disabled={!selectedHmo}
                     required
                   >
                     <option value="" disabled>
-                      Select your plan
+                      {selectedHmo ? 'Select your plan' : 'Select your HMO first'}
                     </option>
-                    {PLAN_TIER_GROUPS.map((group) => (
-                      <optgroup key={group.label} label={group.label}>
-                        {group.tiers.map((tier) => (
-                          <option key={tier} value={tier}>
-                            {tier}
+                    {groupPlansByCategory(plans).map((group) => (
+                      <optgroup key={group.category} label={group.category}>
+                        {group.plans.map((plan) => (
+                          <option key={plan.name} value={plan.name}>
+                            {plan.name}
                           </option>
                         ))}
                       </optgroup>
                     ))}
                   </SelectField>
+
+                  {selectedHmo && selectedPlan && (
+                    <PlanCoverageCard hmo={selectedHmo} plan={selectedPlan} />
+                  )}
                 </div>
               )}
 
@@ -829,6 +835,7 @@ function SelectField({
   value,
   onChange,
   required,
+  disabled,
   hint,
   children,
 }: {
@@ -838,6 +845,7 @@ function SelectField({
   value: string;
   onChange: (value: string) => void;
   required?: boolean;
+  disabled?: boolean;
   hint?: string;
   children: ReactNode;
 }) {
@@ -848,9 +856,10 @@ function SelectField({
         name={id}
         value={value}
         required={required}
+        disabled={disabled}
         aria-describedby={hint ? `${id}-hint` : undefined}
         onChange={(event) => onChange(event.target.value)}
-        className={`${INPUT_CLASS} appearance-none pr-10`}
+        className={`${INPUT_CLASS} appearance-none pr-10 disabled:cursor-not-allowed disabled:opacity-60`}
       >
         {children}
       </select>

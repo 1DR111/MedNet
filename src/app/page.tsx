@@ -1,8 +1,8 @@
 import type { Metadata } from 'next';
 import DiscoveryDashboard from '@/components/DiscoveryDashboard';
-import { fetchFacilitiesWithHMOs } from '@/lib/facilities';
+import { fetchFacilitiesWithHMOs, getHmos } from '@/lib/facilities';
 import { createClient } from '@/lib/supabase/server';
-import type { Hmo, PatientProfile } from '@/types/database';
+import type { PatientProfile } from '@/types/database';
 
 // The title comes from the root layout; only the description is page-specific.
 export const metadata: Metadata = {
@@ -23,13 +23,9 @@ export default async function Home() {
     data: { user },
   } = await supabase.auth.getUser();
 
-  const [facilities, hmosResult, profileResult] = await Promise.all([
+  const [facilities, hmos, profileResult] = await Promise.all([
     fetchFacilitiesWithHMOs(supabase),
-    supabase
-      .from('hmos')
-      .select('*')
-      .order('name', { ascending: true })
-      .overrideTypes<Hmo[], { merge: false }>(),
+    getHmos(supabase),
     user
       ? supabase
           .from('patient_profiles')
@@ -42,17 +38,13 @@ export default async function Home() {
       : null,
   ]);
 
-  if (hmosResult.error) {
-    throw new Error(`Could not load HMOs: ${hmosResult.error.message}`);
-  }
-
   // A missing or unreadable profile is not fatal: the visitor browses as a guest.
   const patientProfile = profileResult && !profileResult.error ? profileResult.data : null;
 
   return (
     <DiscoveryDashboard
       initialFacilities={facilities}
-      hmos={hmosResult.data ?? []}
+      hmos={hmos}
       patientProfile={patientProfile}
       initialSignedIn={user !== null}
     />

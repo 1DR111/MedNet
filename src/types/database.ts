@@ -61,16 +61,42 @@ export type PlanTier = LeadwayPlanTier | 'All' | (string & {});
 /*                                    HMOs                                    */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * One plan an HMO sells, as published in its plan schedule. Stored as JSON in
+ * `hmos.plan_details`; `getPlansForHmo()` falls back to a built-in catalog
+ * when that column is empty.
+ */
+export interface HmoPlanDetail {
+  /** Plan name as printed on the enrollee card, e.g. `'Life Plus'`. */
+  name: string;
+  /** Product line, e.g. `'Retail'`, `'Corporate'`, `'Maternity Plan'`. */
+  category: string;
+  /** One or two sentences, including Naira limits where the HMO publishes them. */
+  summary: string;
+  /** Covered benefits, one item each. */
+  benefits: string[];
+  /** Pre-authorization, waiting-period and exclusion rules. */
+  restrictions: string;
+}
+
 /** A Health Maintenance Organisation (e.g. Leadway Health). */
 export interface Hmo {
   /** Primary key. UUID or a URL-safe slug, e.g. `'leadway'`. */
   id: string;
   /** Human-readable name, e.g. `'Leadway Health'`. */
   name: string;
-  /** Short internal/industry code for the HMO. */
+  /** Short internal/industry code for the HMO, e.g. `'LEADWAY'`, `'AVON'`. */
   code: string;
   /** Public URL of the HMO's logo image, if any. */
   logo_url?: string | null;
+  /** One-line description of the insurer and its product lines. */
+  description?: string | null;
+  /** 24/7 enrollee helpline, digits as dialled in Nigeria. */
+  helpline?: string | null;
+  /** Official website URL. */
+  website?: string | null;
+  /** Published plans; `null` or empty means use the built-in catalog. */
+  plan_details?: HmoPlanDetail[] | null;
   /** ISO 8601 timestamp of when the row was created. */
   created_at?: string;
 }

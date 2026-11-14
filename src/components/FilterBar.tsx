@@ -19,8 +19,15 @@ import {
   Stethoscope,
   X,
 } from 'lucide-react';
-import { FACILITY_TYPES, FACILITY_TYPE_INFO, type FacilityFilters } from '@/lib/facilities';
-import { PLAN_TIER_GROUPS } from '@/lib/plans';
+import {
+  FACILITY_TYPES,
+  FACILITY_TYPE_INFO,
+  findPlan,
+  getPlansForHmo,
+  groupPlansByCategory,
+  shortHmoName,
+  type FacilityFilters,
+} from '@/lib/facilities';
 import type { FacilityType, Hmo } from '@/types/database';
 
 /**
@@ -41,7 +48,7 @@ export interface FilterBarProps {
    * active while the filters match it. What a click does is decided by the
    * parent through `onMyPlanClick` (toggle, or send the user to set a plan).
    */
-  myPlan?: { hmoId: string; planTier: string | null; label: string } | null;
+  myPlan?: { hmoId: string; planTier: string | null; hmoName: string; label: string } | null;
   onMyPlanClick?: () => void;
   /** Called with the trimmed query when the search form is submitted. */
   onSearchSubmit?: (query: string) => void;
@@ -155,11 +162,37 @@ export default function FilterBar({
     (filters.hmoId ?? null) === myPlan.hmoId &&
     (filters.planTier ?? null) === myPlan.planTier;
 
-  const selectedHmoName = hmoId ? (hmos.find((hmo) => hmo.id === hmoId)?.name ?? 'HMO') : null;
+  const selectedHmo = hmoId ? (hmos.find((hmo) => hmo.id === hmoId) ?? null) : null;
+  const selectedHmoName = hmoId ? (selectedHmo?.name ?? 'HMO') : null;
   const planChipActive = hmoId !== '' || planTier !== '';
   const planChipLabel = planChipActive
-    ? [selectedHmoName ?? 'Any HMO', planTier || 'All plans'].join(' · ')
+    ? [selectedHmoName ? shortHmoName(selectedHmoName) : 'Any HMO', planTier || 'All plans'].join(' · ')
     : 'HMO & Plan';
+  const myPlanLabel = myPlan
+    ? `My HMO: ${shortHmoName(myPlan.hmoName)}${myPlan.planTier ? ` · ${myPlan.planTier}` : ''}`
+    : 'My HMO Plan';
+
+  // Plan options carry their HMO too, since a tier name belongs to one insurer.
+  const planOptionValue = (ownerId: string, plan: string) => `${ownerId}::${plan}`;
+  const planValue = planTier ? planOptionValue(hmoId, planTier) : '';
+  const planListed = selectedHmo ? findPlan(getPlansForHmo(selectedHmo), planTier) !== null : false;
+
+  function selectHmo(value: string) {
+    const nextHmo = value ? (hmos.find((hmo) => hmo.id === value) ?? null) : null;
+    // A tier from another insurer never carries over; "All HMOs" clears it too.
+    const keepTier = nextHmo !== null && findPlan(getPlansForHmo(nextHmo), planTier) !== null;
+    update({ hmoId: value || null, planTier: keepTier ? planTier : null });
+  }
+
+  function selectPlan(value: string) {
+    if (!value) {
+      update({ planTier: null });
+      return;
+    }
+    const separator = value.indexOf('::');
+    const ownerId = value.slice(0, separator);
+    update({ hmoId: ownerId || null, planTier: value.slice(separator + 2) });
+  }
 
   function togglePlanMenu() {
     const chip = planChipRef.current;
@@ -349,7 +382,7 @@ export default function FilterBar({
                 : 'Set your HMO plan to filter by it'
             }
           >
-            My HMO Plan
+            <span className="max-w-[14rem] truncate">{myPlanLabel}</span>
           </Chip>
 
           <Chip
@@ -397,7 +430,7 @@ export default function FilterBar({
               id="filter-hmo"
               label="HMO"
               value={hmoId}
-              onChange={(value) => update({ hmoId: value || null })}
+              onChange={selectHmo}
             >
               <option value="">All HMOs</option>
               {hmos.map((hmo) => (
@@ -407,22 +440,35 @@ export default function FilterBar({
               ))}
             </SelectControl>
 
-            <SelectControl
-              id="filter-plan"
-              label="Plan"
-              value={planTier}
-              onChange={(value) => update({ planTier: value || null })}
-            >
+            <SelectControl id="filter-plan" label="Plan" value={planValue} onChange={selectPlan}>
               <option value="">All plans</option>
-              {PLAN_TIER_GROUPS.map((group) => (
-                <optgroup key={group.label} label={group.label}>
-                  {group.tiers.map((tier) => (
-                    <option key={tier} value={tier}>
-                      {tier}
-                    </option>
+              {/* A tier the current options do not list (set before this HMO's
+                  catalog existed) stays selectable until it is changed. */}
+              {planTier && !planListed && (
+                <option value={planValue}>
+                  {planTier}
+                  {selectedHmo ? '' : ' (any HMO)'}
+                </option>
+              )}
+              {selectedHmo
+                ? groupPlansByCategory(getPlansForHmo(selectedHmo)).map((group) => (
+                    <optgroup key={group.category} label={group.category}>
+                      {group.plans.map((plan) => (
+                        <option key={plan.name} value={planOptionValue(selectedHmo.id, plan.name)}>
+                          {plan.name}
+                        </option>
+                      ))}
+                    </optgroup>
+                  ))
+                : hmos.map((hmo) => (
+                    <optgroup key={hmo.id} label={hmo.name}>
+                      {getPlansForHmo(hmo).map((plan) => (
+                        <option key={plan.name} value={planOptionValue(hmo.id, plan.name)}>
+                          {plan.name}
+                        </option>
+                      ))}
+                    </optgroup>
                   ))}
-                </optgroup>
-              ))}
             </SelectControl>
 
             <div className="flex items-center justify-between gap-2 pt-1">

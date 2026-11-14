@@ -14,9 +14,10 @@ import {
   MapPin,
   ShieldCheck,
 } from 'lucide-react';
+import PlanCoverageCard from '@/components/PlanCoverageCard';
 import { CITIES, DEFAULT_CITY, isKnownCity } from '@/lib/cities';
 import { writeSavedCoverage } from '@/lib/coverage';
-import { PLAN_TIER_GROUPS, isPatientPlanTier, type PatientPlanTier } from '@/lib/plans';
+import { findPlan, getHmos, getPlansForHmo, groupPlansByCategory } from '@/lib/facilities';
 import { createClient } from '@/lib/supabase/client';
 import type { Hmo, PatientProfile } from '@/types/database';
 
@@ -44,7 +45,7 @@ export default function OnboardingPage() {
 
   const [hasHmo, setHasHmo] = useState(false);
   const [hmoId, setHmoId] = useState('');
-  const [planTier, setPlanTier] = useState<PatientPlanTier | ''>('');
+  const [planTier, setPlanTier] = useState('');
   const [defaultCity, setDefaultCity] = useState<string>(DEFAULT_CITY);
 
   const [submitting, setSubmitting] = useState<'save' | 'skip' | null>(null);
@@ -67,12 +68,8 @@ export default function OnboardingPage() {
         return;
       }
 
-      const [hmoResult, profileResult] = await Promise.all([
-        supabase
-          .from('hmos')
-          .select('id, name, code, logo_url, created_at')
-          .order('name', { ascending: true })
-          .overrideTypes<Hmo[], { merge: false }>(),
+      const [hmoList, profileResult] = await Promise.all([
+        getHmos(supabase),
         supabase
           .from('patient_profiles')
           .select(
@@ -85,11 +82,6 @@ export default function OnboardingPage() {
 
       if (cancelled) return;
 
-      if (hmoResult.error) {
-        setLoadError(`We could not load the list of HMOs: ${hmoResult.error.message}`);
-        setStatus('error');
-        return;
-      }
       if (profileResult.error) {
         setLoadError(`We could not load your profile: ${profileResult.error.message}`);
         setStatus('error');
@@ -97,14 +89,16 @@ export default function OnboardingPage() {
       }
 
       setUser(currentUser);
-      setHmos(hmoResult.data ?? []);
+      setHmos(hmoList);
 
       const profile = profileResult.data;
       setExistingProfile(profile);
       if (profile) {
         setHasHmo(profile.has_hmo);
         setHmoId(profile.hmo_id ?? '');
-        setPlanTier(isPatientPlanTier(profile.hmo_plan_tier) ? profile.hmo_plan_tier : '');
+        // Only a plan the chosen HMO publishes can be shown in the picker.
+        const savedHmo = hmoList.find((hmo) => hmo.id === profile.hmo_id);
+        setPlanTier(findPlan(getPlansForHmo(savedHmo), profile.hmo_plan_tier)?.name ?? '');
         setDefaultCity(isKnownCity(profile.default_city) ? profile.default_city : DEFAULT_CITY);
       }
 
@@ -129,6 +123,13 @@ export default function OnboardingPage() {
       setHmoId('');
       setPlanTier('');
     }
+  }
+
+  /** A plan belongs to one insurer, so a new HMO starts from its first plan. */
+  function selectHmo(id: string) {
+    setHmoId(id);
+    setError(null);
+    setPlanTier(getPlansForHmo(hmos.find((hmo) => hmo.id === id))[0]?.name ?? '');
   }
 
   async function persist(options: { skip: boolean }) {
@@ -219,6 +220,8 @@ export default function OnboardingPage() {
 
   const busy = submitting !== null;
   const selectedHmo = hmos.find((h) => h.id === hmoId) ?? null;
+  const plans = getPlansForHmo(selectedHmo);
+  const selectedPlan = findPlan(plans, planTier);
 
   return (
     <div className="flex min-h-screen flex-1 flex-col bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
@@ -302,7 +305,7 @@ export default function OnboardingPage() {
                       label="Your HMO"
                       icon={<Building2 className="h-4 w-4" aria-hidden="true" />}
                       value={hmoId}
-                      onChange={(value) => setHmoId(value)}
+                      onChange={selectHmo}
                       required
                     >
                       <option value="" disabled>
@@ -321,22 +324,27 @@ export default function OnboardingPage() {
                       hint={selectedHmo ? `As shown on your ${selectedHmo.name} card` : undefined}
                       icon={<BadgeCheck className="h-4 w-4" aria-hidden="true" />}
                       value={planTier}
-                      onChange={(value) => setPlanTier(isPatientPlanTier(value) ? value : '')}
+                      onChange={(value) => setPlanTier(findPlan(plans, value)?.name ?? '')}
+                      disabled={!selectedHmo}
                       required
                     >
                       <option value="" disabled>
-                        Select your plan
+                        {selectedHmo ? 'Select your plan' : 'Select your HMO first'}
                       </option>
-                      {PLAN_TIER_GROUPS.map((group) => (
-                        <optgroup key={group.label} label={group.label}>
-                          {group.tiers.map((tier) => (
-                            <option key={tier} value={tier}>
-                              {tier}
+                      {groupPlansByCategory(plans).map((group) => (
+                        <optgroup key={group.category} label={group.category}>
+                          {group.plans.map((plan) => (
+                            <option key={plan.name} value={plan.name}>
+                              {plan.name}
                             </option>
                           ))}
                         </optgroup>
                       ))}
                     </SelectField>
+
+                    {selectedHmo && selectedPlan && (
+                      <PlanCoverageCard hmo={selectedHmo} plan={selectedPlan} />
+                    )}
                   </div>
                 )}
 
@@ -454,6 +462,7 @@ function SelectField({
   value,
   onChange,
   required,
+  disabled,
   hint,
   children,
 }: {
@@ -463,6 +472,7 @@ function SelectField({
   value: string;
   onChange: (value: string) => void;
   required?: boolean;
+  disabled?: boolean;
   hint?: string;
   children: React.ReactNode;
 }) {
@@ -487,9 +497,10 @@ function SelectField({
           name={id}
           value={value}
           required={required}
+          disabled={disabled}
           aria-describedby={hint ? `${id}-hint` : undefined}
           onChange={(e) => onChange(e.target.value)}
-          className="block w-full appearance-none rounded-md border border-slate-300 bg-white py-2.5 pl-10 pr-10 text-base text-slate-900 shadow-sm transition-colors focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 md:text-sm dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+          className="block w-full appearance-none rounded-md border border-slate-300 bg-white py-2.5 pl-10 pr-10 text-base text-slate-900 shadow-sm transition-colors focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 disabled:cursor-not-allowed disabled:opacity-60 md:text-sm dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
         >
           {children}
         </select>
